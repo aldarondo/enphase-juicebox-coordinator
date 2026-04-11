@@ -1,8 +1,8 @@
 """
 Enphase Enlighten API client for the coordinator.
 
-Handles auth (login → session cookie → CSRF token) and exposes the two
-calls the coordinator needs: get_tariff() and get_status().
+Handles auth (login → session cookie → CSRF token) and exposes get_tariff(),
+which is the only Enphase call the coordinator needs.
 
 Auth logic mirrors claude-enphase/auth.py — if credentials rotate or the
 login flow changes, keep both files in sync.
@@ -67,26 +67,6 @@ class EnphaseClient:
     async def get_tariff(self) -> dict:
         """Full TOU rate structure — seasonal tiers, rates, and hourly schedules."""
         return await self._request("GET", f"/app-api/{SITE_ID}/tariff.json", params={"country": "us"})
-
-    async def get_status(self) -> dict:
-        """Battery SOC, active profile, and today's energy totals."""
-        from datetime import date as _date
-        today = await self._request("GET", f"/pv/systems/{SITE_ID}/today")
-        battery = await self._request(
-            "GET",
-            f"/service/batteryConfig/api/v1/batterySettings/{SITE_ID}",
-            params={"source": "enho", "userId": os.getenv("ENPHASE_USER_ID", "3263059")},
-        )
-        intervals = today.get("intervals", [])
-        latest = intervals[-1] if intervals else {}
-        return {
-            "battery_soc_pct":      today.get("battery_soc") or latest.get("soc") or 0,
-            "battery_profile":      battery.get("usage"),
-            "solar_produced_wh":    today.get("energy_produced"),
-            "consumed_wh":          today.get("energy_consumed"),
-            "battery_charged_wh":   today.get("energy_charged"),
-            "battery_discharged_wh": today.get("energy_discharged"),
-        }
 
     async def close(self) -> None:
         if self._client:
