@@ -7,8 +7,7 @@ End-to-end deployment — coordinator running on NAS, auto-scheduling EV chargin
 [Empty]
 
 ### 🟢 Ready (Next Up)
-- Deploy claude-juicebox (dependency) — coordinator cannot run until JuiceBox MCP is live
-- Deploy coordinator Docker container to Synology NAS alongside claude-enphase
+- End-to-end test: trigger `run_coordinator` via Claude Desktop and verify JuiceBox schedule is updated (requires car plugged in to confirm JuiceBox MCP tools return live data)
 
 ### 📋 Backlog
 - Add daily scheduling report delivered via notification or log
@@ -18,9 +17,15 @@ End-to-end deployment — coordinator running on NAS, auto-scheduling EV chargin
 - Add override tool: manual "charge now" regardless of TOU window
 
 ### 🔴 Blocked
-- `claude-juicebox` MCP server must be implemented and deployed first
+[Empty]
 
 ## ✅ Completed
+- **NAS deployment (2026-04-18)**
+  - Added SSE transport mode to `server.py` (same pattern as claude-enphase)
+  - Created `docker-compose.yml` + updated `Dockerfile` and `requirements.txt`
+  - Deployed to `/volume1/docker/enphase-juicebox-coordinator` at port 8767
+  - Daily scheduler running: next run 2026-04-19 04:00 America/Phoenix
+  - Connected to Claude Desktop at `http://192.168.0.64:8767/sse`
 - Coordinator orchestration logic (`coordinator.py`)
 - Enphase TOU tariff fetcher (`enphase.py`)
 - Peak window optimizer (`optimizer.py`)

@@ -6,5 +6,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# stdio transport — the MCP host (Claude Code) launches this as a subprocess
+ENV MCP_TRANSPORT=sse
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8767
+EXPOSE 8767
+
 CMD ["python", "server.py"]

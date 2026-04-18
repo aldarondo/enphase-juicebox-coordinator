@@ -1,0 +1,16 @@
+services:
+  coordinator:
+    build: .
+    image: enphase-juicebox-coordinator:latest
+    container_name: enphase-juicebox-coordinator
+    restart: unless-stopped
+    environment:
+      MCP_TRANSPORT: sse
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8767"
+      ENPHASE_EMAIL: ${ENPHASE_EMAIL}
+      ENPHASE_PASSWORD: ${ENPHASE_PASSWORD}
+      ENPHASE_SITE_ID: ${ENPHASE_SITE_ID:-3687112}
+      JUICEBOX_MCP_URL: ${JUICEBOX_MCP_URL:-http://192.168.0.64:3001/sse}
+    ports:
+      - "8767:8767"

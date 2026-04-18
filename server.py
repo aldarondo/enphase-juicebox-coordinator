@@ -12,13 +12,19 @@ Exposes two tools so Claude can trigger and inspect the coordinator:
 Also runs a background APScheduler job (daily at 04:00 Arizona time) so
 the JuiceBox schedule stays current without Claude needing to be involved.
 
-Add to Claude (stdio transport):
-  Command: python /path/to/server.py
+Transport modes (set MCP_TRANSPORT env var):
+  stdio (default) — Claude Code subprocess; use for local dev
+  sse             — persistent HTTP server on MCP_PORT (default 8767);
+                    use for NAS/Docker deployment so the scheduler runs 24/7
+
+Add to Claude Desktop (SSE, NAS deployment):
+  "coordinator": { "type": "sse", "url": "http://<NAS>:8767/sse" }
 """
 
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 
 import pytz
@@ -126,13 +132,13 @@ def _build_scheduler() -> AsyncIOScheduler:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-async def main():
+async def _run_stdio():
     scheduler = _build_scheduler()
     scheduler.start()
     next_run = scheduler.get_job("daily_coordinator").next_run_time
-    log.info("Coordinator MCP server starting")
+    log.info("Coordinator MCP server starting (stdio)")
     log.info("  Daily scheduler: next run at %s (America/Phoenix)", next_run)
-    log.info("  JuiceBox MCP:    %s", __import__("os").getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
+    log.info("  JuiceBox MCP:    %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(read_stream, write_stream, app.create_initialization_options())
@@ -140,5 +146,47 @@ async def main():
     scheduler.shutdown()
 
 
+def _run_sse(host: str, port: int):
+    from contextlib import asynccontextmanager
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Mount, Route
+    import uvicorn
+
+    sse_transport = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await app.run(streams[0], streams[1], app.create_initialization_options())
+
+    @asynccontextmanager
+    async def lifespan(starlette_app):
+        scheduler = _build_scheduler()
+        scheduler.start()
+        next_run = scheduler.get_job("daily_coordinator").next_run_time
+        log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
+        log.info("  Daily scheduler: next run at %s (America/Phoenix)", next_run)
+        log.info("  JuiceBox MCP:    %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
+        yield
+        scheduler.shutdown()
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ],
+        lifespan=lifespan,
+    )
+    uvicorn.run(starlette_app, host=host, port=port)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    if transport == "sse":
+        host = os.environ.get("MCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("MCP_PORT", "8767"))
+        _run_sse(host, port)
+    else:
+        asyncio.run(_run_stdio())
