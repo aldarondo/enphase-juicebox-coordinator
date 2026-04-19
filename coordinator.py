@@ -1,12 +1,12 @@
 """
-Coordinator: fetch Enphase tariff → find peak hours → program JuiceBox to avoid them.
+Coordinator: fetch Enphase tariff via MCP → find peak hours → program JuiceBox via MCP.
 """
 
 import logging
 from datetime import datetime
 import pytz
 
-import enphase
+import enphase_mcp
 import optimizer
 import juicebox_mcp
 
@@ -16,9 +16,9 @@ ARIZONA = pytz.timezone("America/Phoenix")
 
 async def run() -> dict:
     """
-    1. Fetch TOU tariff from Enphase Enlighten
+    1. Fetch TOU tariff from the claude-enphase MCP server
     2. Find the peak pricing window
-    3. Set JuiceBox to charge during all non-peak hours
+    3. Set JuiceBox to charge during all non-peak hours via the JuiceBox MCP server
     """
     started_at = datetime.now(ARIZONA).isoformat()
     log.info("[coordinator] Run started at %s", started_at)
@@ -33,11 +33,11 @@ async def run() -> dict:
         "juicebox_response": None,
     }
 
-    # ── Fetch tariff ────────────────────────────────────────────────────────
+    # ── Fetch tariff via Enphase MCP ────────────────────────────────────────
     tariff = {}
     try:
-        tariff = await enphase.get_client().get_tariff()
-        log.info("[coordinator] Tariff fetched OK")
+        tariff = await enphase_mcp.get_tariff()
+        log.info("[coordinator] Tariff fetched OK via Enphase MCP")
     except Exception as exc:
         msg = f"Failed to fetch tariff: {exc}"
         log.error("[coordinator] %s", msg)
@@ -49,12 +49,12 @@ async def run() -> dict:
     result["schedule"]  = schedule
     result["reasoning"] = reasoning
 
-    # ── Push to JuiceBox ────────────────────────────────────────────────────
+    # ── Push to JuiceBox via JuiceBox MCP ───────────────────────────────────
     try:
         jb_resp = await juicebox_mcp.set_charging_schedule(schedule)
         result["juicebox_ok"]       = True
         result["juicebox_response"] = jb_resp
-        log.info("[coordinator] JuiceBox schedule set OK")
+        log.info("[coordinator] JuiceBox schedule set OK via JuiceBox MCP")
     except Exception as exc:
         msg = f"Failed to set JuiceBox schedule: {exc}"
         log.error("[coordinator] %s", msg)
@@ -64,5 +64,5 @@ async def run() -> dict:
         result["status"] = "error" if not result["juicebox_ok"] else "partial"
 
     result["finished_at"] = datetime.now(ARIZONA).isoformat()
-    log.info("[coordinator] Done — status: %s", result["status"])
+    log.info("[coordinator] Done -- status: %s", result["status"])
     return result

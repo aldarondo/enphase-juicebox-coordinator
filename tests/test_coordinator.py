@@ -1,11 +1,11 @@
 """
-Tests for coordinator.py — mocks enphase, optimizer, and juicebox_mcp.
+Tests for coordinator.py — mocks enphase_mcp, optimizer, and juicebox_mcp.
 """
 
 import sys
 import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -51,15 +51,15 @@ SAMPLE_SCHEDULE = [
         "max_amps": 32,
     }
 ]
-SAMPLE_REASONING = "Peak 15:00–20:00"
+SAMPLE_REASONING = "Peak 15:00-20:00"
 
 
 @pytest.fixture
 def mocks(monkeypatch):
-    mock_client = AsyncMock()
-    mock_client.get_tariff = AsyncMock(return_value=SAMPLE_TARIFF)
-
-    monkeypatch.setattr("coordinator.enphase.get_client", lambda: mock_client)
+    monkeypatch.setattr(
+        "coordinator.enphase_mcp.get_tariff",
+        AsyncMock(return_value=SAMPLE_TARIFF),
+    )
     monkeypatch.setattr(
         "coordinator.optimizer.compute_schedule",
         lambda t: (SAMPLE_SCHEDULE, SAMPLE_REASONING),
@@ -70,7 +70,6 @@ def mocks(monkeypatch):
     )
 
     return {
-        "client": mock_client,
         "schedule": SAMPLE_SCHEDULE,
         "reasoning": SAMPLE_REASONING,
     }
@@ -119,7 +118,10 @@ class TestTariffFetchFails:
 
     @pytest.fixture
     def mocks_tariff_fails(self, mocks, monkeypatch):
-        mocks["client"].get_tariff = AsyncMock(side_effect=Exception("network error"))
+        monkeypatch.setattr(
+            "coordinator.enphase_mcp.get_tariff",
+            AsyncMock(side_effect=Exception("network error")),
+        )
         return mocks
 
     async def test_errors_contains_tariff_message(self, mocks_tariff_fails):
@@ -127,7 +129,7 @@ class TestTariffFetchFails:
         assert any("network error" in e for e in result["errors"])
 
     async def test_status_is_partial_when_juicebox_ok(self, mocks_tariff_fails):
-        """errors=[tariff_err], juicebox_ok=True → status="partial"."""
+        """errors=[tariff_err], juicebox_ok=True -> status="partial"."""
         result = await coordinator.run()
         assert result["status"] == "partial"
 
@@ -171,7 +173,10 @@ class TestBothFail:
 
     @pytest.fixture
     def mocks_both_fail(self, mocks, monkeypatch):
-        mocks["client"].get_tariff = AsyncMock(side_effect=Exception("tariff gone"))
+        monkeypatch.setattr(
+            "coordinator.enphase_mcp.get_tariff",
+            AsyncMock(side_effect=Exception("tariff gone")),
+        )
         monkeypatch.setattr(
             "coordinator.juicebox_mcp.set_charging_schedule",
             AsyncMock(side_effect=Exception("juicebox gone")),
