@@ -17,28 +17,32 @@ import coordinator  # noqa: E402 — imported after sys.path is set
 # ---------------------------------------------------------------------------
 
 SAMPLE_TARIFF = {
-    "tariff": {
+    "purchase": {
+        "typeId": "tou",
         "seasons": [
             {
-                "start_month": 1,
-                "tou_periods": [
+                "id": "summer",
+                "startMonth": "1",
+                "endMonth": "12",
+                "days": [
                     {
-                        "id": "off_peak",
-                        "buy": 0.09,
-                        "charge_periods": [
-                            {"day_types": ["weekdays"], "start": 0, "end": 15}
+                        "id": "weekdays",
+                        "days": [1, 2, 3, 4, 5],
+                        "periods": [
+                            {"id": "off-peak", "startTime": "", "endTime": "", "rate": "0.05", "type": "off-peak"},
+                            {"id": "on-peak",  "startTime": 960, "endTime": 1139, "rate": "0.14", "type": "peak"},
                         ],
                     },
                     {
-                        "id": "on_peak",
-                        "buy": 0.28,
-                        "charge_periods": [
-                            {"day_types": ["weekdays"], "start": 15, "end": 20}
+                        "id": "weekend",
+                        "days": [6, 7],
+                        "periods": [
+                            {"id": "period-1", "startTime": 0, "endTime": 1439, "rate": "0.06", "type": "peak"},
                         ],
                     },
                 ],
             }
-        ]
+        ],
     }
 }
 

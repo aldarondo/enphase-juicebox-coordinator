@@ -317,11 +317,11 @@ class TestComputeSchedule:
         assert "20" in reasoning
 
     def test_empty_tariff_falls_back_to_aps_defaults(self):
-        """With {}, the APS default 15:00–20:00 fallback applies."""
+        """With {}, the APS default 16:00–19:00 fallback applies."""
         schedule, reasoning = compute_schedule({})
         weekday = next(e for e in schedule if "mon" in e["days"])
-        assert weekday["start"] == "20:00"
-        assert weekday["end"] == "15:00"
+        assert weekday["start"] == "19:00"
+        assert weekday["end"] == "16:00"
 
     def test_empty_tariff_reasoning_mentions_aps_default(self):
         _, reasoning = compute_schedule({})

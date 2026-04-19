@@ -7,7 +7,7 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 [Empty]
 
 ### 🟢 Ready (Next Up)
-- **Fix tariff parsing** — `enphase_get_tariff` returns a processed summary; `optimizer.py` expects raw Enlighten API JSON (`{"tariff": {"seasons": [...]}}`). Need to inspect actual tool response and either update `optimizer.py` or add an adapter in `enphase_mcp.py`. Currently falls back to hardcoded APS defaults (15:00–20:00 weekdays), which is functionally correct but ignores real TEP/APS rate data.
+[Empty]
 
 ### 📋 Backlog
 - Add solar production awareness — prefer charging when production exceeds consumption
@@ -19,6 +19,8 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 [Empty]
 
 ## ✅ Completed
+- **Fix tariff parsing (2026-04-19)** — `optimizer.py` now handles real Enphase `purchase.seasons[].days[].periods[]` format (minutes from midnight). `_active_season()` uses range-based matching when `endMonth` is present, "last season with start_month ≤ today" for legacy format. APS fallback corrected to 16:00–19:00. All 46 tests passing.
+- **Weekly automated image rebuild (2026-04-19)** — `build.yml` adds `cron: "0 4 * * 0"` for weekly Sunday base-image maintenance, matching claude-juicebox pattern.
 - **End-to-end test passing (2026-04-19)** — `status=ok`, `juicebox_ok=True`
   - Coordinator fetches tariff from Enphase MCP, computes 2-window schedule, programs JuiceBox MCP
   - JuiceBox confirms: `windows_scheduled=2`, `cron_jobs_created=4`
