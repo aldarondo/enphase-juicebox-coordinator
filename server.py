@@ -1,16 +1,17 @@
 """
 Enphase–JuiceBox Coordinator MCP Server
 
-Exposes two tools so Claude can trigger and inspect the coordinator:
+Exposes tools so Claude can trigger and inspect the coordinator:
 
-  run_coordinator  — fetch Enphase rates + battery SOC, compute optimal
-                     EV charging windows, push schedule to JuiceBox MCP.
+  run_coordinator   — fetch Enphase rates, compute optimal charging windows,
+                      push schedule to JuiceBox MCP.
+  get_last_run      — return the result from the most recent coordinator run.
+  charge_now        — override TOU schedule and charge immediately.
+  get_weekly_report — return the most recent Sunday weekly report.
 
-  get_last_run     — return the result from the most recent coordinator run
-                     (whether triggered manually or by the daily scheduler).
-
-Also runs a background APScheduler job (daily at 04:00 Arizona time) so
-the JuiceBox schedule stays current without Claude needing to be involved.
+Also runs background APScheduler jobs:
+  - Daily 04:00 Arizona: coordinator run (keep JuiceBox schedule current)
+  - Sunday 06:00 Arizona: weekly report (logs summary to container logs)
 
 Transport modes (set MCP_TRANSPORT env var):
   stdio (default) — Claude Code subprocess; use for local dev
@@ -25,7 +26,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -34,6 +35,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 import coordinator
+import enphase_mcp
+import juicebox_mcp
+import optimizer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +51,7 @@ app = Server("enphase-juicebox-coordinator")
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 _last_result: dict | None = None
+_last_report: dict | None = None
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -54,10 +59,9 @@ TOOLS = [
     Tool(
         name="run_coordinator",
         description=(
-            "Fetch the current Enphase TOU rate schedule and home battery SOC, "
-            "compute the optimal JuiceBox EV charging windows for the week "
-            "(preferring cheapest rate hours, scaling amps by battery level), "
-            "and push the schedule to the JuiceBox MCP server. "
+            "Fetch the current Enphase TOU rate schedule, compute the optimal "
+            "JuiceBox EV charging windows for the week (preferring cheapest rate "
+            "hours), and push the schedule to the JuiceBox MCP server. "
             "Returns the full result including the computed schedule and reasoning."
         ),
         inputSchema={"type": "object", "properties": {}, "required": []},
@@ -66,8 +70,36 @@ TOOLS = [
         name="get_last_run",
         description=(
             "Return the result from the most recent coordinator run — "
-            "the computed schedule, reasoning, battery SOC used, and any errors. "
+            "the computed schedule, reasoning, and any errors. "
             "Useful for checking what schedule is currently programmed and why."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    Tool(
+        name="charge_now",
+        description=(
+            "Override the TOU schedule and allow the JuiceBox to charge immediately. "
+            "Pushes a charging window starting now for the specified number of hours "
+            "(default: until end of today). The normal TOU schedule resumes at the "
+            "next 04:00 coordinator run."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "hours": {
+                    "type": "number",
+                    "description": "Hours to charge from now (default: until 23:59 today).",
+                }
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_weekly_report",
+        description=(
+            "Return the most recent Sunday weekly report — current schedule, "
+            "last coordinator run status, and tariff source. Generated automatically "
+            "every Sunday at 06:00 Arizona time."
         ),
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
@@ -82,7 +114,7 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    global _last_result
+    global _last_result, _last_report
 
     if name == "run_coordinator":
         log.info("Tool: run_coordinator triggered by Claude")
@@ -105,6 +137,55 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload = _last_result
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
+    if name == "charge_now":
+        now = datetime.now(ARIZONA)
+        day_name = now.strftime("%a").lower()  # "mon", "tue", etc.
+        start_str = now.strftime("%H:%M")
+
+        hours = arguments.get("hours")
+        if hours:
+            end_dt = now + timedelta(hours=float(hours))
+            # Cap at end of day
+            end_of_day = now.replace(hour=23, minute=59, second=0, microsecond=0)
+            end_dt = min(end_dt, end_of_day)
+            end_str = end_dt.strftime("%H:%M")
+        else:
+            end_str = "23:59"
+
+        override_schedule = [{
+            "label":    f"Manual override — charge now until {end_str}",
+            "days":     [day_name],
+            "start":    start_str,
+            "end":      end_str,
+            "max_amps": 32,
+        }]
+
+        log.info("Tool: charge_now — pushing override window %s–%s (%s)", start_str, end_str, day_name)
+        try:
+            jb_resp = await juicebox_mcp.set_charging_schedule(override_schedule)
+            payload = {
+                "status":            "ok",
+                "override_active":   True,
+                "window":            override_schedule[0],
+                "juicebox_response": jb_resp,
+                "note":              "Normal TOU schedule resumes at next 04:00 coordinator run.",
+            }
+        except Exception as exc:
+            log.error("charge_now failed: %s", exc)
+            payload = {"status": "error", "error": str(exc)}
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    if name == "get_weekly_report":
+        if _last_report is None:
+            payload = {
+                "status":  "no_report",
+                "message": "No weekly report has been generated yet. "
+                           "Reports are generated automatically every Sunday at 06:00 Arizona time.",
+            }
+        else:
+            payload = _last_report
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
     return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -119,6 +200,105 @@ async def _scheduled_run():
         log.exception("[scheduler] Daily run failed")
 
 
+async def _verify_schedule_against_tariff() -> dict:
+    """
+    Fetch live tariff, recompute expected schedule, and compare to what was
+    last programmed. Returns a verification summary dict.
+    """
+    verification: dict = {"status": "unknown"}
+    try:
+        tariff = await enphase_mcp.get_tariff()
+        expected_schedule, reasoning = optimizer.compute_schedule(tariff)
+        verification["tariff_source"] = reasoning
+        verification["expected_schedule"] = expected_schedule
+
+        if _last_result and _last_result.get("schedule"):
+            programmed = _last_result["schedule"]
+            # Compare weekday windows by start/end times
+            def _weekday_window(sched):
+                return next((w for w in sched if "mon" in w.get("days", [])), None)
+
+            exp_wd = _weekday_window(expected_schedule)
+            prog_wd = _weekday_window(programmed)
+
+            if exp_wd and prog_wd:
+                if exp_wd["start"] == prog_wd["start"] and exp_wd["end"] == prog_wd["end"]:
+                    verification["status"] = "in_sync"
+                    verification["message"] = (
+                        f"Programmed weekday window ({prog_wd['start']}–{prog_wd['end']}) "
+                        f"matches current tariff."
+                    )
+                else:
+                    verification["status"] = "drift_detected"
+                    verification["message"] = (
+                        f"MISMATCH: programmed {prog_wd['start']}–{prog_wd['end']} "
+                        f"but tariff now indicates {exp_wd['start']}–{exp_wd['end']}. "
+                        f"Run coordinator to resync."
+                    )
+            else:
+                verification["status"] = "could_not_compare"
+        else:
+            verification["status"] = "no_programmed_schedule"
+            verification["message"] = "No programmed schedule to compare against."
+    except Exception as exc:
+        verification["status"] = "error"
+        verification["error"] = str(exc)
+        log.warning("[weekly_report] Tariff verification failed: %s", exc)
+
+    return verification
+
+
+async def _scheduled_weekly_report():
+    global _last_report
+    now = datetime.now(ARIZONA)
+    log.info("[scheduler] Weekly report triggered (Sunday 06:00 Arizona)")
+
+    report: dict = {
+        "generated_at": now.isoformat(),
+        "week_ending":  now.strftime("%Y-%m-%d"),
+    }
+
+    if _last_result:
+        report["last_coordinator_run"] = {
+            "started_at":  _last_result.get("started_at"),
+            "finished_at": _last_result.get("finished_at"),
+            "status":      _last_result.get("status"),
+            "juicebox_ok": _last_result.get("juicebox_ok"),
+            "reasoning":   _last_result.get("reasoning"),
+            "errors":      _last_result.get("errors", []),
+        }
+        report["current_schedule"] = _last_result.get("schedule", [])
+    else:
+        report["last_coordinator_run"] = None
+        report["current_schedule"] = []
+        report["note"] = "Coordinator has not run yet this session."
+
+    report["schedule_verification"] = await _verify_schedule_against_tariff()
+    _last_report = report
+
+    # Log the report prominently so it appears in container logs
+    log.info("=" * 60)
+    log.info("WEEKLY REPORT — %s", now.strftime("%Y-%m-%d"))
+    log.info("=" * 60)
+    if _last_result:
+        run = report["last_coordinator_run"]
+        log.info("  Last run:    %s  status=%s  juicebox_ok=%s",
+                 run["started_at"], run["status"], run["juicebox_ok"])
+        log.info("  Reasoning:   %s", run["reasoning"])
+        if run["errors"]:
+            log.info("  Errors:      %s", "; ".join(run["errors"]))
+        for window in report["current_schedule"]:
+            log.info("  Schedule:    %s  %s–%s  [%s]",
+                     ",".join(window.get("days", [])),
+                     window.get("start"), window.get("end"),
+                     window.get("label", ""))
+    else:
+        log.info("  No coordinator run recorded this session.")
+    v = report["schedule_verification"]
+    log.info("  Verification: [%s] %s", v["status"], v.get("message", v.get("error", "")))
+    log.info("=" * 60)
+
+
 def _build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=ARIZONA)
     scheduler.add_job(
@@ -128,6 +308,14 @@ def _build_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="daily_coordinator",
     )
+    scheduler.add_job(
+        _scheduled_weekly_report,
+        "cron",
+        day_of_week="sun",
+        hour=6,
+        minute=0,
+        id="weekly_report",
+    )
     return scheduler
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -135,10 +323,12 @@ def _build_scheduler() -> AsyncIOScheduler:
 async def _run_stdio():
     scheduler = _build_scheduler()
     scheduler.start()
-    next_run = scheduler.get_job("daily_coordinator").next_run_time
+    next_daily  = scheduler.get_job("daily_coordinator").next_run_time
+    next_report = scheduler.get_job("weekly_report").next_run_time
     log.info("Coordinator MCP server starting (stdio)")
-    log.info("  Daily scheduler: next run at %s (America/Phoenix)", next_run)
-    log.info("  JuiceBox MCP:    %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
+    log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
+    log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
+    log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(read_stream, write_stream, app.create_initialization_options())
@@ -165,10 +355,12 @@ def _run_sse(host: str, port: int):
     async def lifespan(starlette_app):
         scheduler = _build_scheduler()
         scheduler.start()
-        next_run = scheduler.get_job("daily_coordinator").next_run_time
+        next_daily  = scheduler.get_job("daily_coordinator").next_run_time
+        next_report = scheduler.get_job("weekly_report").next_run_time
         log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
-        log.info("  Daily scheduler: next run at %s (America/Phoenix)", next_run)
-        log.info("  JuiceBox MCP:    %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
+        log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
+        log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
+        log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
         yield
         scheduler.shutdown()
 

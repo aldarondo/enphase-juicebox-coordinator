@@ -11,14 +11,13 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 
 ### 📋 Backlog
 - Add solar production awareness — prefer charging when production exceeds consumption
-- Tune optimizer thresholds based on real-world Arizona TOU schedule
-- Add override tool: manual "charge now" regardless of TOU window
-- Add daily scheduling report delivered via notification or log
 
 ### 🔴 Blocked
 [Empty]
 
 ## ✅ Completed
+- **Override tool `charge_now` (2026-04-19)** — MCP tool that pushes an immediate charging window for today (optional `hours` param; defaults to until 23:59). Normal TOU schedule resumes at next 04:00 run.
+- **Weekly Sunday report (2026-04-19)** — Scheduler job at Sunday 06:00 Arizona; logs schedule + last run status; includes live tariff re-fetch and drift detection (`in_sync` / `drift_detected`). Accessible via `get_weekly_report` MCP tool. 59 tests passing.
 - **Fix tariff parsing (2026-04-19)** — `optimizer.py` now handles real Enphase `purchase.seasons[].days[].periods[]` format (minutes from midnight). `_active_season()` uses range-based matching when `endMonth` is present, "last season with start_month ≤ today" for legacy format. APS fallback corrected to 16:00–19:00. All 46 tests passing.
 - **Weekly automated image rebuild (2026-04-19)** — `build.yml` adds `cron: "0 4 * * 0"` for weekly Sunday base-image maintenance, matching claude-juicebox pattern.
 - **End-to-end test passing (2026-04-19)** — `status=ok`, `juicebox_ok=True`
