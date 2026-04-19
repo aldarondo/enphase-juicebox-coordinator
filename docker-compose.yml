@@ -4,11 +4,13 @@ services:
     image: enphase-juicebox-coordinator:latest
     container_name: enphase-juicebox-coordinator
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       MCP_TRANSPORT: sse
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8767"
-      ENPHASE_MCP_URL: ${ENPHASE_MCP_URL:-http://192.168.0.64:8766/sse}
-      JUICEBOX_MCP_URL: ${JUICEBOX_MCP_URL:-http://192.168.0.64:3001/sse}
+      ENPHASE_MCP_URL: ${ENPHASE_MCP_URL:-http://host.docker.internal:8766/sse}
+      JUICEBOX_MCP_URL: ${JUICEBOX_MCP_URL:-http://host.docker.internal:3001/sse}
     ports:
       - "8767:8767"
