@@ -1,7 +1,6 @@
 services:
   coordinator:
-    build: .
-    image: enphase-juicebox-coordinator:latest
+    image: ghcr.io/aldarondo/enphase-juicebox-coordinator:latest
     container_name: enphase-juicebox-coordinator
     restart: unless-stopped
     extra_hosts:
