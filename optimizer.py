@@ -24,6 +24,9 @@ def _find_peak_weekday_hours(tariff: dict) -> dict | None:
     """
     t = tariff.get("tariff") or tariff.get("tariff_plan") or tariff
 
+    log.debug("[optimizer] Tariff keys at parse level: %s",
+              list(t.keys()) if isinstance(t, dict) else type(t).__name__)
+
     seasons = t.get("seasons", [])
     if not seasons:
         return None

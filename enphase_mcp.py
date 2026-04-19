@@ -33,10 +33,17 @@ async def get_tariff() -> dict:
             await session.initialize()
             log.info("[enphase_mcp] Calling enphase_get_tariff")
             result = await session.call_tool("enphase_get_tariff", {})
-            if result.content:
-                text = result.content[0].text
-                try:
-                    return json.loads(text)
-                except (ValueError, AttributeError):
-                    return {"raw": text}
-            return {}
+            if result.isError or not result.content:
+                text = result.content[0].text if result.content else "empty response"
+                raise RuntimeError(f"enphase_get_tariff failed: {text}")
+            text = result.content[0].text
+            # claude-enphase server returns plain "Error: ..." text on API failures
+            if text.startswith("Error:"):
+                raise RuntimeError(f"enphase_get_tariff failed: {text}")
+            try:
+                data = json.loads(text)
+                log.debug("[enphase_mcp] Tariff top-level keys: %s",
+                          list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+                return data
+            except (ValueError, AttributeError) as exc:
+                raise RuntimeError(f"enphase_get_tariff returned non-JSON: {text[:200]}") from exc
