@@ -340,6 +340,8 @@ def _run_sse(host: str, port: int):
     from contextlib import asynccontextmanager
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
     import uvicorn
 
@@ -350,6 +352,11 @@ def _run_sse(host: str, port: int):
             request.scope, request.receive, request._send
         ) as streams:
             await app.run(streams[0], streams[1], app.create_initialization_options())
+
+    async def handle_report(request: Request):
+        """GET /report — return the latest weekly report as JSON."""
+        return JSONResponse(_last_report or {"status": "no_report",
+                                             "message": "No report generated yet."})
 
     @asynccontextmanager
     async def lifespan(starlette_app):
@@ -367,6 +374,7 @@ def _run_sse(host: str, port: int):
     starlette_app = Starlette(
         routes=[
             Route("/sse", endpoint=handle_sse),
+            Route("/report", endpoint=handle_report),
             Mount("/messages/", app=sse_transport.handle_post_message),
         ],
         lifespan=lifespan,
