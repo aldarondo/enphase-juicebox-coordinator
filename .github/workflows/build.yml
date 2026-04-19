@@ -3,6 +3,9 @@ name: Build coordinator image
 on:
   push:
     branches: [main]
+  schedule:
+    # Rebuild weekly (Sunday 04:00 UTC) to pick up Python base image security patches
+    - cron: "0 4 * * 0"
   workflow_dispatch:
 
 permissions:
