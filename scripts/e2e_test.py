@@ -5,7 +5,7 @@ Connects to the coordinator MCP server at COORDINATOR_URL, triggers
 run_coordinator, and asserts the result is not an error.
 
 Usage:
-    python scripts/e2e_test.py [--url http://192.168.0.64:8767/sse]
+    python scripts/e2e_test.py [--url http://<YOUR-NAS-IP>:8767/sse]
 """
 
 import argparse
@@ -17,7 +17,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 
-COORDINATOR_URL = "http://192.168.0.64:8767/sse"
+COORDINATOR_URL = "http://<YOUR-NAS-IP>:8767/sse"
 
 
 async def run_e2e(url: str) -> int:

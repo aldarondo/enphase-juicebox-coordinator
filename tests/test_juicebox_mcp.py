@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import juicebox_mcp  # noqa: E402
 
-DEFAULT_URL = "http://192.168.0.64:3001/sse"
+DEFAULT_URL = "http://<YOUR-NAS-IP>:3001/sse"
 
 SAMPLE_SCHEDULE = [
     {"label": "weekday", "days": ["mon"], "start": "20:00", "end": "15:00", "max_amps": 32}

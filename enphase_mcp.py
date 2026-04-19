@@ -14,7 +14,7 @@ from mcp.client.sse import sse_client
 
 log = logging.getLogger(__name__)
 
-ENPHASE_MCP_URL = os.getenv("ENPHASE_MCP_URL", "http://192.168.0.64:8766/sse")
+ENPHASE_MCP_URL = os.getenv("ENPHASE_MCP_URL", "http://<YOUR-NAS-IP>:8766/sse")
 
 
 async def get_tariff() -> dict:

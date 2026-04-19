@@ -328,7 +328,7 @@ async def _run_stdio():
     log.info("Coordinator MCP server starting (stdio)")
     log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
     log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
-    log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
+    log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(read_stream, write_stream, app.create_initialization_options())
@@ -367,7 +367,7 @@ def _run_sse(host: str, port: int):
         log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
         log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
         log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
-        log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse"))
+        log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
         yield
         scheduler.shutdown()
 

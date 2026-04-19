@@ -42,7 +42,7 @@ jobs:
       - name: Deploy to NAS
         uses: appleboy/ssh-action@v1
         with:
-          host: 192.168.0.64
+          host: <YOUR-NAS-IP>
           port: 2222
           username: charles
           password: ${{ secrets.NAS_SSH_PASSWORD }}

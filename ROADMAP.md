@@ -37,7 +37,7 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
   - Created `docker-compose.yml` + updated `Dockerfile` and `requirements.txt`
   - Deployed to `/volume1/docker/enphase-juicebox-coordinator` at port 8767
   - Daily scheduler running: 04:00 America/Phoenix
-  - Connected to Claude Desktop at `http://192.168.0.64:8767/sse`
+  - Connected to Claude Desktop at `http://<YOUR-NAS-IP>:8767/sse`
 - Coordinator orchestration logic (`coordinator.py`)
 - Peak window optimizer (`optimizer.py`)
 - JuiceBox MCP caller (`juicebox_mcp.py`)

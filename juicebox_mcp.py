@@ -13,7 +13,7 @@ from mcp.client.sse import sse_client
 
 log = logging.getLogger(__name__)
 
-JUICEBOX_MCP_URL = os.getenv("JUICEBOX_MCP_URL", "http://192.168.0.64:3001/sse")
+JUICEBOX_MCP_URL = os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse")
 
 
 async def set_charging_schedule(schedule: list[dict]) -> dict:
