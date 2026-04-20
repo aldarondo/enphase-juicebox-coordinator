@@ -11,5 +11,12 @@ services:
       MCP_PORT: "8767"
       ENPHASE_MCP_URL: ${ENPHASE_MCP_URL:-http://host.docker.internal:8766/sse}
       JUICEBOX_MCP_URL: ${JUICEBOX_MCP_URL:-http://host.docker.internal:3001/sse}
+      # Comma-separated private iCal URLs from Google Calendar settings.
+      # Get each one from: Google Calendar → gear icon → Settings →
+      # (select calendar) → "Secret address in iCal format"
+      GOOGLE_ICAL_URLS: ${GOOGLE_ICAL_URLS:-}
+      HOME_LAT: ${HOME_LAT:-33.6388}
+      HOME_LON: ${HOME_LON:--112.0740}
+      DRIVING_THRESHOLD_MILES: ${DRIVING_THRESHOLD_MILES:-80}
     ports:
       - "8767:8767"

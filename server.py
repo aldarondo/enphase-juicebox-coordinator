@@ -34,6 +34,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+import calendar_check
 import coordinator
 import enphase_mcp
 import juicebox_mcp
@@ -54,6 +55,12 @@ app = Server("enphase-juicebox-coordinator")
 _last_result:   dict | None = None
 _last_report:   dict | None = None
 _cached_tariff: dict        = {}   # updated each daily coordinator run
+_overnight_charging: dict   = {
+    "enabled":         True,
+    "reason":          "default — calendar check has not run yet",
+    "set_at":          None,
+    "calendar_result": None,
+}
 _surplus_state: dict        = {
     "mode":               "tou_schedule",  # "tou_schedule" | "surplus_override"
     "surplus_poll_count":    0,
@@ -106,6 +113,40 @@ TOOLS = [
                 }
             },
             "required": [],
+        },
+    ),
+    Tool(
+        name="get_overnight_mode",
+        description=(
+            "Return the current overnight charging decision — whether the TOU "
+            "schedule will run tonight, why, and the calendar check result that "
+            "triggered it. The nightly calendar check runs at 21:00 Arizona and "
+            "enables overnight TOU charging if tomorrow's driving exceeds the "
+            "threshold (default 80 miles)."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    Tool(
+        name="set_overnight_mode",
+        description=(
+            "Manually override tonight's charging mode. "
+            "Pass enable=true to force TOU overnight charging (e.g. you know "
+            "tomorrow will be a long drive), or enable=false to skip overnight "
+            "charging (surplus solar only). Resets to default after the 04:00 run."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "type":        "boolean",
+                    "description": "True = charge overnight on TOU schedule; False = surplus only.",
+                },
+                "reason": {
+                    "type":        "string",
+                    "description": "Why you're overriding (for logging).",
+                },
+            },
+            "required": ["enable", "reason"],
         },
     ),
     Tool(
@@ -201,6 +242,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload = {"status": "error", "error": str(exc)}
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
+    if name == "get_overnight_mode":
+        return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
+
+    if name == "set_overnight_mode":
+        enabled = arguments.get("enable", True)
+        reason  = arguments.get("reason", "manual override")
+        _overnight_charging.update({
+            "enabled":         enabled,
+            "reason":          f"Manual override: {reason}",
+            "set_at":          datetime.now(ARIZONA).isoformat(),
+            "calendar_result": None,
+        })
+        log.info("Tool: set_overnight_mode → enabled=%s  reason=%s", enabled, reason)
+        return [TextContent(type="text", text=json.dumps({
+            "status":  "ok",
+            "enabled": enabled,
+            "reason":  reason,
+            "note":    "Resets to default (enabled=True) after the 04:00 coordinator run.",
+        }, indent=2))]
+
     if name == "get_surplus_status":
         peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
         payload = dict(_surplus_state)
@@ -229,13 +290,44 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
 async def _scheduled_run():
-    global _last_result, _cached_tariff
-    log.info("[scheduler] Daily coordinator run triggered (04:00 Arizona)")
-    try:
-        _last_result = await coordinator.run()
-        log.info("[scheduler] Done — status: %s", _last_result.get("status"))
-    except Exception:
-        log.exception("[scheduler] Daily run failed")
+    global _last_result, _cached_tariff, _overnight_charging
+    enabled = _overnight_charging.get("enabled", True)
+    reason  = _overnight_charging.get("reason", "")
+    log.info("[scheduler] Daily coordinator run — overnight_charging=%s  (%s)", enabled, reason)
+
+    if enabled:
+        try:
+            _last_result = await coordinator.run()
+            log.info("[scheduler] Done — status: %s", _last_result.get("status"))
+        except Exception:
+            log.exception("[scheduler] Daily run failed")
+    else:
+        # Skip TOU schedule — surplus monitor handles daytime charging only.
+        # Clear any active schedule so the car won't draw overnight.
+        log.info("[scheduler] Skipping TOU schedule — clearing JuiceBox schedule")
+        try:
+            await juicebox_mcp.set_charging_schedule([])
+            _last_result = {
+                "started_at":        datetime.now(ARIZONA).isoformat(),
+                "status":            "ok",
+                "schedule":          [],
+                "reasoning":         f"Overnight TOU charging skipped: {reason}",
+                "juicebox_ok":       True,
+                "juicebox_response": {"cleared": True},
+                "errors":            [],
+                "finished_at":       datetime.now(ARIZONA).isoformat(),
+            }
+        except Exception as exc:
+            log.error("[scheduler] Failed to clear JuiceBox schedule: %s", exc)
+
+    # Reset overnight mode — safe default is always to charge
+    _overnight_charging = {
+        "enabled":         True,
+        "reason":          "reset after 04:00 coordinator run",
+        "set_at":          None,
+        "calendar_result": None,
+    }
+
     # Refresh cached tariff so surplus monitor has current peak hours
     try:
         _cached_tariff = await enphase_mcp.get_tariff()
@@ -340,6 +432,36 @@ async def _scheduled_weekly_report():
     v = report["schedule_verification"]
     log.info("  Verification: [%s] %s", v["status"], v.get("message", v.get("error", "")))
     log.info("=" * 60)
+
+
+async def _nightly_calendar_check() -> None:
+    """
+    Runs at 21:00 Arizona. Fetches tomorrow's calendar events, estimates total
+    driving distance, and sets _overnight_charging accordingly.
+
+    If tomorrow's driving >= DRIVING_THRESHOLD_MILES, overnight TOU charging
+    is enabled so the car won't wake up empty waiting for the sun.
+    If no iCal URLs are configured, overnight charging stays enabled (safe default).
+    """
+    global _overnight_charging
+    ical_urls = [u.strip() for u in os.getenv("GOOGLE_ICAL_URLS", "").split(",") if u.strip()]
+
+    if not ical_urls:
+        log.info("[calendar_check] GOOGLE_ICAL_URLS not configured — overnight charging stays enabled")
+        return
+
+    log.info("[calendar_check] Running nightly calendar check (%d feed(s))", len(ical_urls))
+    try:
+        result = await calendar_check.check_tomorrow_driving(ical_urls)
+        _overnight_charging = {
+            "enabled":         result["overnight_charging_needed"],
+            "reason":          result["reasoning"],
+            "set_at":          datetime.now(ARIZONA).isoformat(),
+            "calendar_result": result,
+        }
+        log.info("[calendar_check] %s", result["reasoning"])
+    except Exception as exc:
+        log.error("[calendar_check] Check failed — leaving overnight charging enabled: %s", exc)
 
 
 async def _activate_surplus_charging(amps: int, now: datetime) -> None:
@@ -478,6 +600,13 @@ def _build_scheduler() -> AsyncIOScheduler:
         minutes=15,
         id="surplus_monitor",
     )
+    scheduler.add_job(
+        _nightly_calendar_check,
+        "cron",
+        hour=21,
+        minute=0,
+        id="calendar_check",
+    )
     return scheduler
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -485,13 +614,15 @@ def _build_scheduler() -> AsyncIOScheduler:
 async def _run_stdio():
     scheduler = _build_scheduler()
     scheduler.start()
-    next_daily   = scheduler.get_job("daily_coordinator").next_run_time
-    next_report  = scheduler.get_job("weekly_report").next_run_time
-    next_surplus = scheduler.get_job("surplus_monitor").next_run_time
+    next_daily    = scheduler.get_job("daily_coordinator").next_run_time
+    next_report   = scheduler.get_job("weekly_report").next_run_time
+    next_surplus  = scheduler.get_job("surplus_monitor").next_run_time
+    next_calendar = scheduler.get_job("calendar_check").next_run_time
     log.info("Coordinator MCP server starting (stdio)")
     log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
     log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
     log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
+    log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
     log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
@@ -526,13 +657,15 @@ def _run_sse(host: str, port: int):
     async def lifespan(starlette_app):
         scheduler = _build_scheduler()
         scheduler.start()
-        next_daily   = scheduler.get_job("daily_coordinator").next_run_time
-        next_report  = scheduler.get_job("weekly_report").next_run_time
-        next_surplus = scheduler.get_job("surplus_monitor").next_run_time
+        next_daily    = scheduler.get_job("daily_coordinator").next_run_time
+        next_report   = scheduler.get_job("weekly_report").next_run_time
+        next_surplus  = scheduler.get_job("surplus_monitor").next_run_time
+        next_calendar = scheduler.get_job("calendar_check").next_run_time
         log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
         log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
         log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
         log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
+        log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
         log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
         yield
         scheduler.shutdown()
