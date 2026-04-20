@@ -10,12 +10,13 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 [Empty]
 
 ### 📋 Backlog
-- Add solar production awareness — prefer charging when production exceeds consumption
+[Empty]
 
 ### 🔴 Blocked
 [Empty]
 
 ## ✅ Completed
+- **Surplus solar monitor (2026-04-20)** — 15-minute polling job detects when battery SOC ≥ 95% and solar production exceeds home consumption, then activates JuiceBox at computed amps (surplus watts ÷ 240V). Reverts to TOU schedule when surplus ends. Peak hours are excluded so the car never charges during expensive windows. New `get_surplus_status` MCP tool exposes current mode, SOC, production/consumption, and thresholds. Data sourced from `enphase_get_energy_summary` (15-min interval arrays + real-time `battery_details.aggregate_soc`).
 - **Override tool `charge_now` (2026-04-19)** — MCP tool that pushes an immediate charging window for today (optional `hours` param; defaults to until 23:59). Normal TOU schedule resumes at next 04:00 run.
 - **Weekly Sunday report + email (2026-04-19)** — Coordinator generates report at Sunday 06:00 Arizona (logs + `get_weekly_report` tool + `/report` HTTP endpoint). Claude Code scheduled task fires at 07:17 Sunday, fetches `/report`, and emails digest to charles.aldarondo@gmail.com via Gmail MCP. Flags drift/errors prominently. 59 tests passing.
 - **Fix tariff parsing (2026-04-19)** — `optimizer.py` now handles real Enphase `purchase.seasons[].days[].periods[]` format (minutes from midnight). `_active_season()` uses range-based matching when `endMonth` is present, "last season with start_month ≤ today" for legacy format. APS fallback corrected to 16:00–19:00. All 46 tests passing.

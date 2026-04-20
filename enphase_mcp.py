@@ -17,6 +17,38 @@ log = logging.getLogger(__name__)
 ENPHASE_MCP_URL = os.getenv("ENPHASE_MCP_URL", "http://<YOUR-NAS-IP>:8766/sse")
 
 
+async def get_energy_summary(date_str: str | None = None) -> dict:
+    """
+    Call enphase_get_energy_summary on the claude-enphase MCP server.
+
+    Returns today's energy summary including 15-minute interval arrays for
+    production, consumption, battery SOC, and grid import/export.
+
+    Raises:
+        Exception if the MCP server is unreachable or the tool call fails.
+    """
+    log.info("[enphase_mcp] Calling enphase_get_energy_summary")
+    args: dict = {}
+    if date_str:
+        args["date"] = date_str
+    async with sse_client(ENPHASE_MCP_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("enphase_get_energy_summary", args)
+            if result.isError or not result.content:
+                text = result.content[0].text if result.content else "empty response"
+                raise RuntimeError(f"enphase_get_energy_summary failed: {text}")
+            text = result.content[0].text
+            if text.startswith("Error:"):
+                raise RuntimeError(f"enphase_get_energy_summary failed: {text}")
+            try:
+                return json.loads(text)
+            except (ValueError, AttributeError) as exc:
+                raise RuntimeError(
+                    f"enphase_get_energy_summary returned non-JSON: {text[:200]}"
+                ) from exc
+
+
 async def get_tariff() -> dict:
     """
     Call enphase_get_tariff on the claude-enphase MCP server.

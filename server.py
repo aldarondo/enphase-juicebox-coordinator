@@ -38,6 +38,7 @@ import coordinator
 import enphase_mcp
 import juicebox_mcp
 import optimizer
+import surplus_monitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,8 +51,21 @@ ARIZONA = pytz.timezone("America/Phoenix")
 app = Server("enphase-juicebox-coordinator")
 
 # ── Shared state ──────────────────────────────────────────────────────────────
-_last_result: dict | None = None
-_last_report: dict | None = None
+_last_result:   dict | None = None
+_last_report:   dict | None = None
+_cached_tariff: dict        = {}   # updated each daily coordinator run
+_surplus_state: dict        = {
+    "mode":               "tou_schedule",  # "tou_schedule" | "surplus_override"
+    "surplus_poll_count":    0,
+    "no_surplus_poll_count": 0,
+    "battery_soc":        None,
+    "production_w":       None,
+    "consumption_w":      None,
+    "surplus_w":          None,
+    "charge_amps":        None,
+    "last_checked":       None,
+    "last_action":        None,
+}
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -93,6 +107,18 @@ TOOLS = [
             },
             "required": [],
         },
+    ),
+    Tool(
+        name="get_surplus_status",
+        description=(
+            "Return the current state of the surplus solar monitor — "
+            "battery SOC, solar production vs. consumption, whether surplus "
+            "charging is active, charge amps, and when the monitor last ran. "
+            "The monitor polls every 15 minutes during non-peak daylight hours "
+            "and activates JuiceBox when the battery is full and solar exceeds "
+            "home consumption."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
         name="get_weekly_report",
@@ -175,6 +201,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload = {"status": "error", "error": str(exc)}
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
+    if name == "get_surplus_status":
+        peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
+        payload = dict(_surplus_state)
+        payload["peak_window"] = f"{peak['start_h']:02d}:00–{peak['end_h']:02d}:00 weekdays"
+        payload["thresholds"] = {
+            "battery_full_soc":  surplus_monitor.BATTERY_FULL_SOC,
+            "battery_low_soc":   surplus_monitor.BATTERY_LOW_SOC,
+            "surplus_min_w":     surplus_monitor.SURPLUS_MIN_W,
+            "activation_polls":  surplus_monitor.ACTIVATION_POLLS,
+        }
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
     if name == "get_weekly_report":
         if _last_report is None:
             payload = {
@@ -191,13 +229,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
 async def _scheduled_run():
-    global _last_result
+    global _last_result, _cached_tariff
     log.info("[scheduler] Daily coordinator run triggered (04:00 Arizona)")
     try:
         _last_result = await coordinator.run()
         log.info("[scheduler] Done — status: %s", _last_result.get("status"))
     except Exception:
         log.exception("[scheduler] Daily run failed")
+    # Refresh cached tariff so surplus monitor has current peak hours
+    try:
+        _cached_tariff = await enphase_mcp.get_tariff()
+    except Exception:
+        log.warning("[scheduler] Could not refresh cached tariff after coordinator run")
 
 
 async def _verify_schedule_against_tariff() -> dict:
@@ -299,6 +342,119 @@ async def _scheduled_weekly_report():
     log.info("=" * 60)
 
 
+async def _activate_surplus_charging(amps: int, now: datetime) -> None:
+    """Push a surplus-charging window to JuiceBox and update shared state."""
+    global _surplus_state
+    day_name  = now.strftime("%a").lower()
+    start_str = now.strftime("%H:%M")
+    surplus_w = _surplus_state.get("surplus_w") or 0
+    override  = [{
+        "label":    f"Surplus solar — {amps}A (~{surplus_w}W excess)",
+        "days":     [day_name],
+        "start":    start_str,
+        "end":      "23:59",
+        "max_amps": amps,
+    }]
+    try:
+        await juicebox_mcp.set_charging_schedule(override)
+        _surplus_state["mode"]        = "surplus_override"
+        _surplus_state["charge_amps"] = amps
+        _surplus_state["last_action"] = f"activated {amps}A surplus charging at {now.isoformat()}"
+        log.info("[surplus_monitor] ACTIVATED surplus charging at %dA (~%dW excess)", amps, surplus_w)
+    except Exception as exc:
+        log.error("[surplus_monitor] Failed to activate surplus charging: %s", exc)
+
+
+async def _revert_to_tou_schedule() -> None:
+    """Restore the TOU schedule and reset surplus state."""
+    global _surplus_state
+    if _last_result and _last_result.get("schedule"):
+        schedule = _last_result["schedule"]
+    else:
+        schedule, _ = optimizer.compute_schedule(_cached_tariff)
+    try:
+        await juicebox_mcp.set_charging_schedule(schedule)
+        _surplus_state["mode"]               = "tou_schedule"
+        _surplus_state["surplus_poll_count"]    = 0
+        _surplus_state["no_surplus_poll_count"] = 0
+        _surplus_state["charge_amps"]        = None
+        _surplus_state["last_action"] = f"reverted to TOU schedule ({datetime.now(ARIZONA).isoformat()})"
+        log.info("[surplus_monitor] REVERTED to TOU schedule")
+    except Exception as exc:
+        log.error("[surplus_monitor] Failed to revert to TOU schedule: %s", exc)
+
+
+async def _surplus_monitor_run() -> None:
+    """
+    Polls Enphase every 15 minutes during non-peak daylight hours.
+    Activates JuiceBox when battery is full and solar exceeds consumption.
+    Reverts to TOU schedule when surplus ends.
+    Skips the peak pricing window entirely — car never charges during peak.
+    """
+    global _surplus_state
+    now = datetime.now(ARIZONA)
+
+    # Only run during daylight hours (06:00–20:00 Arizona)
+    if now.hour < 6 or now.hour >= 20:
+        return
+
+    # Determine peak window from cached tariff (fallback to APS default)
+    peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
+    if surplus_monitor.is_peak_time(now.hour, peak["start_h"], peak["end_h"]):
+        log.debug("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
+                  peak["start_h"], peak["end_h"])
+        # Safety: if we somehow entered surplus mode and peak just started, revert
+        if _surplus_state["mode"] == "surplus_override":
+            log.warning("[surplus_monitor] Peak started while surplus override active — reverting")
+            await _revert_to_tou_schedule()
+        return
+
+    # Fetch current energy state
+    try:
+        summary = await enphase_mcp.get_energy_summary()
+    except Exception as exc:
+        log.warning("[surplus_monitor] Could not fetch energy summary: %s", exc)
+        return
+
+    values   = surplus_monitor.extract_current_values(summary)
+    soc      = values["battery_soc"]
+    prod     = values["production_w"]
+    cons     = values["consumption_w"]
+    surplus_w = max(0, prod - cons)
+
+    _surplus_state.update({
+        "battery_soc":   soc,
+        "production_w":  prod,
+        "consumption_w": cons,
+        "surplus_w":     surplus_w,
+        "last_checked":  now.isoformat(),
+    })
+
+    if surplus_monitor.is_surplus(values):
+        _surplus_state["surplus_poll_count"]    += 1
+        _surplus_state["no_surplus_poll_count"]  = 0
+
+        if _surplus_state["surplus_poll_count"] >= surplus_monitor.ACTIVATION_POLLS:
+            amps = surplus_monitor.compute_charge_amps(surplus_w)
+            # Activate on first trigger, or update amps if production changed
+            if (_surplus_state["mode"] == "tou_schedule" or
+                    amps != _surplus_state.get("charge_amps")):
+                await _activate_surplus_charging(amps, now)
+
+    elif surplus_monitor.is_no_longer_surplus(values):
+        _surplus_state["no_surplus_poll_count"] += 1
+        _surplus_state["surplus_poll_count"]     = 0
+
+        if (_surplus_state["mode"] == "surplus_override" and
+                _surplus_state["no_surplus_poll_count"] >= surplus_monitor.DEACTIVATION_POLLS):
+            await _revert_to_tou_schedule()
+
+    log.info(
+        "[surplus_monitor] SOC=%s%%  prod=%dW  cons=%dW  surplus=%dW  mode=%s",
+        soc, prod, cons, surplus_w, _surplus_state["mode"],
+    )
+
+
 def _build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=ARIZONA)
     scheduler.add_job(
@@ -316,6 +472,12 @@ def _build_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="weekly_report",
     )
+    scheduler.add_job(
+        _surplus_monitor_run,
+        "interval",
+        minutes=15,
+        id="surplus_monitor",
+    )
     return scheduler
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -323,11 +485,13 @@ def _build_scheduler() -> AsyncIOScheduler:
 async def _run_stdio():
     scheduler = _build_scheduler()
     scheduler.start()
-    next_daily  = scheduler.get_job("daily_coordinator").next_run_time
-    next_report = scheduler.get_job("weekly_report").next_run_time
+    next_daily   = scheduler.get_job("daily_coordinator").next_run_time
+    next_report  = scheduler.get_job("weekly_report").next_run_time
+    next_surplus = scheduler.get_job("surplus_monitor").next_run_time
     log.info("Coordinator MCP server starting (stdio)")
     log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
     log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
+    log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
     log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
@@ -362,11 +526,13 @@ def _run_sse(host: str, port: int):
     async def lifespan(starlette_app):
         scheduler = _build_scheduler()
         scheduler.start()
-        next_daily  = scheduler.get_job("daily_coordinator").next_run_time
-        next_report = scheduler.get_job("weekly_report").next_run_time
+        next_daily   = scheduler.get_job("daily_coordinator").next_run_time
+        next_report  = scheduler.get_job("weekly_report").next_run_time
+        next_surplus = scheduler.get_job("surplus_monitor").next_run_time
         log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
         log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
         log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
+        log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
         log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
         yield
         scheduler.shutdown()
