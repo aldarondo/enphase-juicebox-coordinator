@@ -42,14 +42,12 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/enphase-juicebox-coordinator:${{ github.sha }}
 
       - name: Deploy to NAS
-        if: ${{ secrets.NAS_SSH_PASSWORD != '' }}
         uses: appleboy/ssh-action@v1
         with:
           host: 192.168.0.64
           port: 2222
           username: charles
           password: ${{ secrets.NAS_SSH_PASSWORD }}
-          script_stop: true
           envs: NAS_PASS,GOOGLE_ICAL_URLS
           script: |
             printf 'GOOGLE_ICAL_URLS=%s\n' "$GOOGLE_ICAL_URLS" > /volume1/docker/enphase-juicebox-coordinator/.env
