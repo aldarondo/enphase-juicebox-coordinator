@@ -40,9 +40,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/enphase-juicebox-coordinator:${{ github.sha }}
 
       - name: Deploy to NAS
+        if: ${{ secrets.NAS_SSH_PASSWORD != '' }}
         uses: appleboy/ssh-action@v1
         with:
-          host: <YOUR-NAS-IP>
+          host: 192.168.0.64
           port: 2222
           username: charles
           password: ${{ secrets.NAS_SSH_PASSWORD }}
