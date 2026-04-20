@@ -400,7 +400,7 @@ async def _surplus_monitor_run() -> None:
 
     # Determine peak window from cached tariff (fallback to APS default)
     peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
-    if surplus_monitor.is_peak_time(now.hour, peak["start_h"], peak["end_h"]):
+    if surplus_monitor.is_peak_time(now.hour, now.minute, peak["start_h"], peak["end_h"]):
         log.debug("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
                   peak["start_h"], peak["end_h"])
         # Safety: if we somehow entered surplus mode and peak just started, revert
