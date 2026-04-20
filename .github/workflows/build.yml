@@ -7,6 +7,8 @@ on:
       - "*.py"
       - requirements.txt
       - Dockerfile
+      - docker-compose.yml
+      - .github/workflows/build.yml
   schedule:
     # Rebuild weekly (Sunday 05:00 UTC) to pick up Python base image security patches
     - cron: "0 5 * * 0"
@@ -48,9 +50,11 @@ jobs:
           username: charles
           password: ${{ secrets.NAS_SSH_PASSWORD }}
           script_stop: true
-          envs: NAS_PASS
+          envs: NAS_PASS,GOOGLE_ICAL_URLS
           script: |
+            printf 'GOOGLE_ICAL_URLS=%s\n' "$GOOGLE_ICAL_URLS" > /volume1/docker/enphase-juicebox-coordinator/.env
             echo "$NAS_PASS" | sudo -S /usr/local/bin/docker compose -f /volume1/docker/enphase-juicebox-coordinator/docker-compose.yml pull
             echo "$NAS_PASS" | sudo -S /usr/local/bin/docker compose -f /volume1/docker/enphase-juicebox-coordinator/docker-compose.yml up -d
         env:
           NAS_PASS: ${{ secrets.NAS_SSH_PASSWORD }}
+          GOOGLE_ICAL_URLS: ${{ secrets.GOOGLE_ICAL_URLS }}
