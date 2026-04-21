@@ -302,23 +302,28 @@ async def _scheduled_run():
         except Exception:
             log.exception("[scheduler] Daily run failed")
     else:
-        # Skip TOU schedule — surplus monitor handles daytime charging only.
-        # Clear any active schedule so the car won't draw overnight.
-        log.info("[scheduler] Skipping TOU schedule — clearing JuiceBox schedule")
+        # No long trip tomorrow — skip overnight charging.
+        # Set a daytime-only schedule (super off-peak window) instead of clearing
+        # entirely, so the car still charges during the cheapest rate window.
+        log.info("[scheduler] Overnight disabled — setting daytime-only schedule")
         try:
-            await juicebox_mcp.set_charging_schedule([])
+            tariff = _cached_tariff or {}
+            schedule, sched_reasoning = optimizer.compute_schedule(
+                tariff, overnight_enabled=False
+            )
+            jb_resp = await juicebox_mcp.set_charging_schedule(schedule)
             _last_result = {
                 "started_at":        datetime.now(ARIZONA).isoformat(),
                 "status":            "ok",
-                "schedule":          [],
-                "reasoning":         f"Overnight TOU charging skipped: {reason}",
+                "schedule":          schedule,
+                "reasoning":         f"Overnight disabled ({reason}). {sched_reasoning}",
                 "juicebox_ok":       True,
-                "juicebox_response": {"cleared": True},
+                "juicebox_response": jb_resp,
                 "errors":            [],
                 "finished_at":       datetime.now(ARIZONA).isoformat(),
             }
         except Exception as exc:
-            log.error("[scheduler] Failed to clear JuiceBox schedule: %s", exc)
+            log.error("[scheduler] Failed to set daytime schedule: %s", exc)
 
     # Reset overnight mode — safe default is always to charge
     _overnight_charging = {

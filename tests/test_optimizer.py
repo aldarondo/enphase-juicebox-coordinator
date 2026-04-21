@@ -10,7 +10,7 @@ from datetime import date
 # Make sure the project root is on the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from optimizer import _find_peak_weekday_hours, compute_schedule
+from optimizer import _find_peak_weekday_hours, _find_daytime_window, compute_schedule
 
 # ---------------------------------------------------------------------------
 # Shared fixture
@@ -334,3 +334,156 @@ class TestComputeSchedule:
             assert required_keys.issubset(set(entry.keys())), (
                 f"Entry missing keys: {required_keys - set(entry.keys())}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Enphase app-api format fixtures (real tariff shape from Enlighten API)
+# ---------------------------------------------------------------------------
+
+# Winter weekday periods (minutes from midnight):
+#   00:00-09:59  mid-peak   $0.049  (startTime=0,    endTime=599)
+#   10:00-14:59  super off-peak $0.036  (catch-all — no explicit times)
+#   15:00-15:59  mid-peak   $0.061  (startTime=900,  endTime=959)
+#   16:00-18:59  peak       $0.101  (startTime=960,  endTime=1139)
+#   19:00-23:59  mid-peak   $0.061  (startTime=1140, endTime=1439)
+ENPHASE_WINTER_TARIFF = {
+    "purchase": {
+        "seasons": [
+            {
+                "id": "winter",
+                "startMonth": "11",
+                "endMonth": "4",
+                "days": [
+                    {
+                        "id": "weekdays",
+                        "days": [1, 2, 3, 4, 5],
+                        "periods": [
+                            {"id": "off-peak",  "startTime": "",    "endTime": "",    "rate": "0.03643", "type": "off-peak"},
+                            {"id": "period-0",  "startTime": 0,     "endTime": 599,   "rate": "0.04854", "type": "mid-peak"},
+                            {"id": "period-2",  "startTime": 900,   "endTime": 959,   "rate": "0.06086", "type": "mid-peak"},
+                            {"id": "period-3",  "startTime": 960,   "endTime": 1139,  "rate": "0.10080", "type": "peak"},
+                            {"id": "period-1",  "startTime": 1140,  "endTime": 1439,  "rate": "0.06086", "type": "mid-peak"},
+                        ],
+                    },
+                    {
+                        "id": "weekend",
+                        "days": [6, 7],
+                        "periods": [
+                            {"id": "period-1",  "startTime": 0,     "endTime": 1439,  "rate": "0.06086", "type": "peak"},
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+}
+
+# Summer: only on-peak window (no super off-peak)
+ENPHASE_SUMMER_TARIFF = {
+    "purchase": {
+        "seasons": [
+            {
+                "id": "summer",
+                "startMonth": "5",
+                "endMonth": "10",
+                "days": [
+                    {
+                        "id": "weekdays",
+                        "days": [1, 2, 3, 4, 5],
+                        "periods": [
+                            {"id": "off-peak",  "startTime": "",   "endTime": "",   "rate": "0.04849", "type": "off-peak"},
+                            {"id": "period-0",  "startTime": 960,  "endTime": 1139, "rate": "0.14375", "type": "peak"},
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+}
+
+
+# ===========================================================================
+# _find_daytime_window tests
+# ===========================================================================
+
+class TestFindDaytimeWindow:
+
+    def test_winter_detects_super_off_peak_gap(self):
+        peak = {"start_h": 16, "end_h": 19, "source": "test"}
+        result = _find_daytime_window(ENPHASE_WINTER_TARIFF, peak)
+        assert result["start"] == "10:00"
+        assert result["end"]   == "15:00"
+
+    def test_summer_falls_back_to_10_to_peak(self):
+        peak = {"start_h": 16, "end_h": 19, "source": "test"}
+        result = _find_daytime_window(ENPHASE_SUMMER_TARIFF, peak)
+        assert result["start"] == "10:00"
+        assert result["end"]   == "16:00"
+
+    def test_empty_tariff_falls_back_to_peak_start(self):
+        peak = {"start_h": 16, "end_h": 19, "source": "test"}
+        result = _find_daytime_window({}, peak)
+        assert result["start"] == "10:00"
+        assert result["end"]   == "16:00"
+
+
+# ===========================================================================
+# compute_schedule — overnight_enabled flag
+# ===========================================================================
+
+class TestComputeScheduleOvernightFlag:
+
+    # --- overnight_enabled=True (default) ---
+
+    def test_overnight_enabled_weekday_wraps_overnight(self):
+        """Full non-peak window: charges from peak_end back to peak_start."""
+        schedule, _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=True)
+        wd = next(e for e in schedule if "mon" in e["days"])
+        assert wd["start"] == "19:00"
+        assert wd["end"]   == "16:00"
+
+    def test_overnight_enabled_reasoning_mentions_enabled(self):
+        _, reasoning = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=True)
+        assert "overnight charging enabled" in reasoning
+
+    # --- overnight_enabled=False ---
+
+    def test_overnight_disabled_winter_uses_super_off_peak(self):
+        """No overnight draw — weekday window is super off-peak only."""
+        schedule, _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
+        wd = next(e for e in schedule if "mon" in e["days"])
+        assert wd["start"] == "10:00"
+        assert wd["end"]   == "15:00"
+
+    def test_overnight_disabled_summer_uses_daytime_to_peak(self):
+        schedule, _ = compute_schedule(ENPHASE_SUMMER_TARIFF, overnight_enabled=False)
+        wd = next(e for e in schedule if "mon" in e["days"])
+        assert wd["start"] == "10:00"
+        assert wd["end"]   == "16:00"
+
+    def test_overnight_disabled_reasoning_mentions_disabled(self):
+        _, reasoning = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
+        assert "overnight disabled" in reasoning
+
+    def test_overnight_disabled_weekend_unchanged(self):
+        """Weekend window is always the same regardless of overnight flag."""
+        sched_on,  _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=True)
+        sched_off, _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
+        we_on  = next(e for e in sched_on  if "sat" in e["days"])
+        we_off = next(e for e in sched_off if "sat" in e["days"])
+        assert we_on["start"] == we_off["start"]
+        assert we_on["end"]   == we_off["end"]
+
+    def test_overnight_disabled_no_overnight_hours_in_window(self):
+        """The daytime window must not span midnight (start < end)."""
+        schedule, _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
+        wd = next(e for e in schedule if "mon" in e["days"])
+        start_h = int(wd["start"].split(":")[0])
+        end_h   = int(wd["end"].split(":")[0])
+        assert start_h < end_h, "Daytime window should not wrap overnight"
+
+    def test_overnight_disabled_schedule_has_required_keys(self):
+        required = {"label", "days", "start", "end", "max_amps"}
+        schedule, _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
+        for entry in schedule:
+            assert required.issubset(set(entry.keys()))

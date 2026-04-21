@@ -141,14 +141,69 @@ def _find_peak_weekday_hours(tariff: dict) -> dict | None:
     return None
 
 
-def compute_schedule(tariff: dict) -> tuple[list[dict], str]:
+def _find_daytime_window(tariff: dict, peak: dict) -> dict:
+    """
+    Find the cheapest contiguous daytime charging window for overnight-disabled
+    mode (no long trip tomorrow — surplus solar + cheapest rate only).
+
+    Scans for uncovered minutes in the 10:00–peak_start range.  In winter this
+    yields the APS super off-peak gap (10:00–15:00).  In summer (no super
+    off-peak period), the whole 10:00–peak_start window is returned.
+
+    Returns {"start": "HH:MM", "end": "HH:MM"}.
+    """
+    fallback = {"start": "10:00", "end": f"{peak['start_h']:02d}:00"}
+
+    section = tariff.get("purchase") or tariff.get("tariff") or tariff.get("tariff_plan") or tariff
+    if not isinstance(section, dict):
+        return fallback
+
+    seasons = section.get("seasons", [])
+    active  = _active_season(seasons)
+    if not active:
+        return fallback
+
+    # Collect every minute explicitly covered by a named weekday period.
+    covered: set[int] = set()
+    for day_type in active.get("days", []):
+        if day_type.get("id") != "weekdays":
+            continue
+        for period in day_type.get("periods", []):
+            s = period.get("startTime", "")
+            e = period.get("endTime",   "")
+            if s == "" or e == "":
+                continue
+            try:
+                covered.update(range(int(s), int(e) + 1))
+            except (TypeError, ValueError):
+                continue
+
+    # Search for uncovered gaps between 10:00 and peak_start.
+    search_end = peak["start_h"] * 60 - 1
+    gaps = [m for m in range(600, search_end + 1) if m not in covered]
+
+    if not gaps:
+        return fallback
+
+    # Single contiguous gap expected (e.g. 600–899 for APS winter).
+    start_h, start_m = divmod(gaps[0],      60)
+    end_h,   end_m   = divmod(gaps[-1] + 1, 60)
+    return {"start": f"{start_h:02d}:{start_m:02d}", "end": f"{end_h:02d}:{end_m:02d}"}
+
+
+def compute_schedule(tariff: dict, overnight_enabled: bool = True) -> tuple[list[dict], str]:
     """
     Return (schedule, reasoning) where schedule is ready for
     the JuiceBox set_charging_schedule tool.
 
-    Logic:
-      - Weekdays: charge from peak_end → peak_start (one overnight window)
-      - Weekends: charge 08:00–22:00 (no meaningful peak pricing)
+    overnight_enabled=True  (long trip tomorrow or default):
+      Weekdays: charge from peak_end → peak_start (all non-peak hours, wraps overnight).
+
+    overnight_enabled=False (no long trip — surplus solar / cheap rate only):
+      Weekdays: charge only during the cheapest daytime window (super off-peak
+      when available, otherwise 10:00→peak_start).  No overnight draw.
+
+    Weekends always get a wide window (no meaningful peak pricing).
     """
     peak = _find_peak_weekday_hours(tariff)
 
@@ -156,19 +211,33 @@ def compute_schedule(tariff: dict) -> tuple[list[dict], str]:
         reasoning = (f"Peak window from tariff: {peak['start_h']:02d}:00–"
                      f"{peak['end_h']:02d}:00 weekdays ({peak['source']})")
     else:
-        peak     = APS_DEFAULT_PEAK
+        peak      = APS_DEFAULT_PEAK
         reasoning = f"Tariff not parsed — using {peak['source']}"
 
     log.info("[optimizer] %s", reasoning)
 
-    schedule = [
-        {
+    if overnight_enabled:
+        weekday_window = {
             "label":    f"Weekday off-peak — avoid {peak['start_h']:02d}:00–{peak['end_h']:02d}:00",
-            "days":     ["mon", "tue", "wed", "thu", "fri"],
             "start":    f"{peak['end_h']:02d}:00",
             "end":      f"{peak['start_h']:02d}:00",
             "max_amps": 32,
-        },
+        }
+        reasoning += " | overnight charging enabled"
+    else:
+        dw = _find_daytime_window(tariff, peak)
+        weekday_window = {
+            "label":    f"Weekday super off-peak {dw['start']}–{dw['end']} (overnight disabled)",
+            "start":    dw["start"],
+            "end":      dw["end"],
+            "max_amps": 32,
+        }
+        reasoning += f" | overnight disabled — daytime only {dw['start']}–{dw['end']}"
+
+    log.info("[optimizer] %s", reasoning)
+
+    schedule = [
+        {**weekday_window, "days": ["mon", "tue", "wed", "thu", "fri"]},
         {
             "label":    "Weekend — no peak pricing",
             "days":     ["sat", "sun"],
