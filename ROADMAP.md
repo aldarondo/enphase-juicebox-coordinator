@@ -16,6 +16,10 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 [Empty]
 
 ## ✅ Completed
+- **Charging priority model + surplus-first architecture (2026-04-21)** — Flipped default overnight charging to disabled (surplus solar is primary mode). Calendar check at 21:00 enables overnight TOU only when a long trip is detected next day. `_revert_to_tou_schedule()` fixed falsy-empty-list bug (now uses `"schedule" in _last_result`). When overnight is disabled, JuiceBox schedule is set to `[]` (empty); surplus monitor is sole charging trigger.
+- **Super off-peak rate-tier awareness (2026-04-21)** — `optimizer.py` gains `_find_daytime_window()` which detects uncovered minute gaps between 10:00 and peak_start. Winter APS tariff → 10:00–15:00 super off-peak; summer (no gap) → fallback 10:00–peak_start. `compute_schedule()` accepts `overnight_enabled` param and uses daytime window when disabled. 57 tests passing.
+- **Cloudflare Tunnel SSH deploy fix (2026-04-21)** — GitHub Actions SSH through Cloudflare Tunnel now uses a service token (`non_identity` policy). Previously the SSH-type Access app rejected non-interactive cloudflared even with "bypass everyone" policy. Created service token via new `scripts/create-access-service-token.mjs` in claude-cloudflare; stored `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` as GitHub Actions secrets. Deploy pipeline working (run #24727724620).
+- **GOOGLE_ICAL_URLS persistence (2026-04-21)** — iCal URLs stored as GitHub Actions secret `GOOGLE_ICAL_URLS`. `build.yml` base64-encodes and writes `.env` to NAS on every deploy, so the file survives container restarts. Calendar check now stays disabled (surplus-only) if iCal not configured, rather than enabling overnight charging on failure.
 - **Surplus solar monitor (2026-04-20)** — 15-minute polling job detects when battery SOC ≥ 95% and solar production exceeds home consumption, then activates JuiceBox at computed amps (surplus watts ÷ 240V). Reverts to TOU schedule when surplus ends. Peak hours are excluded so the car never charges during expensive windows. New `get_surplus_status` MCP tool exposes current mode, SOC, production/consumption, and thresholds. Data sourced from `enphase_get_energy_summary` (15-min interval arrays + real-time `battery_details.aggregate_soc`).
 - **Override tool `charge_now` (2026-04-19)** — MCP tool that pushes an immediate charging window for today (optional `hours` param; defaults to until 23:59). Normal TOU schedule resumes at next 04:00 run.
 - **Weekly Sunday report + email (2026-04-19)** — Coordinator generates report at Sunday 06:00 Arizona (logs + `get_weekly_report` tool + `/report` HTTP endpoint). Claude Code scheduled task fires at 07:17 Sunday, fetches `/report`, and emails digest to charles.aldarondo@gmail.com via Gmail MCP. Flags drift/errors prominently. 59 tests passing.
@@ -47,5 +51,4 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 - Dockerfile for NAS deployment
 
 ## 🚫 Blocked
-- ❌ [docker-monitor:container-stopped] Container `enphase-juicebox-coordinator` is not running on the NAS — check `docker logs enphase-juicebox-coordinator` and restart — 2026-04-21 08:42 UTC
-- ❌ [docker-monitor:deploy-failed] GitHub Actions deploy failed (run #24690313002) — https://github.com/aldarondo/enphase-juicebox-coordinator/actions/runs/24690313002 — 2026-04-21 08:00 UTC
+[Empty]
