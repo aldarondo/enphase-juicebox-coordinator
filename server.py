@@ -298,7 +298,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "run_calendar_check":
         log.info("Tool: run_calendar_check triggered manually")
-        await _calendar_check()
+        await _nightly_calendar_check()
         return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
 
     return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
