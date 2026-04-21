@@ -7,7 +7,8 @@ Exposes tools so Claude can trigger and inspect the coordinator:
                       push schedule to JuiceBox MCP.
   get_last_run      — return the result from the most recent coordinator run.
   charge_now        — override TOU schedule and charge immediately.
-  get_weekly_report — return the most recent Sunday weekly report.
+  get_weekly_report  — return the most recent Sunday weekly report.
+  run_calendar_check — trigger the 21:00 calendar check on demand.
 
 Also runs background APScheduler jobs:
   - Daily 04:00 Arizona: coordinator run (keep JuiceBox schedule current)
@@ -170,6 +171,16 @@ TOOLS = [
         ),
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
+    Tool(
+        name="run_calendar_check",
+        description=(
+            "Trigger the calendar check now (normally runs at 21:00 Arizona). "
+            "Reads Google Calendar iCal feeds, finds tomorrow's events, geocodes "
+            "locations to estimate driving distance, and enables overnight TOU "
+            "charging if a long trip (>50 miles) is detected."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
 ]
 
 # ── Tool handlers ─────────────────────────────────────────────────────────────
@@ -284,6 +295,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             payload = _last_report
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    if name == "run_calendar_check":
+        log.info("Tool: run_calendar_check triggered manually")
+        await _calendar_check()
+        return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
 
     return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
