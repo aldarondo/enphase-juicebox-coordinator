@@ -51,9 +51,13 @@ jobs:
           SSHPASS: ${{ secrets.NAS_SSH_PASSWORD }}
           CF_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          GOOGLE_ICAL_URLS: ${{ secrets.GOOGLE_ICAL_URLS }}
         run: |
+          # Base64-encode .env content locally so special chars survive the SSH quoting trip
+          ENV_B64=$(printf 'GOOGLE_ICAL_URLS=%s\n' "$GOOGLE_ICAL_URLS" | base64 -w0)
           sshpass -e ssh -o StrictHostKeyChecking=no \
             -o "ProxyCommand=cloudflared access ssh --hostname nas-ssh.aldarondo.family --id $CF_CLIENT_ID --secret $CF_CLIENT_SECRET" \
             charles@nas-ssh.aldarondo.family \
-            "echo \"$NAS_PASS\" | sudo -S /usr/local/bin/docker compose -f /volume1/docker/enphase-juicebox-coordinator/docker-compose.yml pull && \
+            "echo \"$NAS_PASS\" | sudo -S bash -c \"echo $ENV_B64 | base64 -d > /volume1/docker/enphase-juicebox-coordinator/.env\" && \
+             echo \"$NAS_PASS\" | sudo -S /usr/local/bin/docker compose -f /volume1/docker/enphase-juicebox-coordinator/docker-compose.yml pull && \
              echo \"$NAS_PASS\" | sudo -S /usr/local/bin/docker compose -f /volume1/docker/enphase-juicebox-coordinator/docker-compose.yml up -d"
