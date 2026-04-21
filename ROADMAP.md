@@ -47,4 +47,5 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 - Dockerfile for NAS deployment
 
 ## 🚫 Blocked
+- ❌ [docker-monitor:container-stopped] Container `enphase-juicebox-coordinator` is not running on the NAS — check `docker logs enphase-juicebox-coordinator` and restart — 2026-04-21 08:42 UTC
 - ❌ [docker-monitor:deploy-failed] GitHub Actions deploy failed (run #24690313002) — https://github.com/aldarondo/enphase-juicebox-coordinator/actions/runs/24690313002 — 2026-04-21 08:00 UTC
