@@ -56,8 +56,8 @@ _last_result:   dict | None = None
 _last_report:   dict | None = None
 _cached_tariff: dict        = {}   # updated each daily coordinator run
 _overnight_charging: dict   = {
-    "enabled":         True,
-    "reason":          "default — calendar check has not run yet",
+    "enabled":         False,
+    "reason":          "default — surplus solar only until 21:00 calendar check",
     "set_at":          None,
     "calendar_result": None,
 }
@@ -302,33 +302,29 @@ async def _scheduled_run():
         except Exception:
             log.exception("[scheduler] Daily run failed")
     else:
-        # No long trip tomorrow — skip overnight charging.
-        # Set a daytime-only schedule (super off-peak window) instead of clearing
-        # entirely, so the car still charges during the cheapest rate window.
-        log.info("[scheduler] Overnight disabled — setting daytime-only schedule")
+        # No long trip tomorrow — surplus monitor is the primary charging mode.
+        # Clear the JuiceBox schedule entirely so the car only charges when the
+        # surplus monitor activates it (battery full + solar exceeds consumption).
+        log.info("[scheduler] Overnight disabled — clearing schedule (surplus monitor primary)")
         try:
-            tariff = _cached_tariff or {}
-            schedule, sched_reasoning = optimizer.compute_schedule(
-                tariff, overnight_enabled=False
-            )
-            jb_resp = await juicebox_mcp.set_charging_schedule(schedule)
+            jb_resp = await juicebox_mcp.set_charging_schedule([])
             _last_result = {
                 "started_at":        datetime.now(ARIZONA).isoformat(),
                 "status":            "ok",
-                "schedule":          schedule,
-                "reasoning":         f"Overnight disabled ({reason}). {sched_reasoning}",
+                "schedule":          [],
+                "reasoning":         f"Overnight TOU disabled ({reason}) — surplus solar is primary charging mode.",
                 "juicebox_ok":       True,
                 "juicebox_response": jb_resp,
                 "errors":            [],
                 "finished_at":       datetime.now(ARIZONA).isoformat(),
             }
         except Exception as exc:
-            log.error("[scheduler] Failed to set daytime schedule: %s", exc)
+            log.error("[scheduler] Failed to clear JuiceBox schedule: %s", exc)
 
-    # Reset overnight mode — safe default is always to charge
+    # Reset overnight mode — default is surplus-only until tonight's calendar check
     _overnight_charging = {
-        "enabled":         True,
-        "reason":          "reset after 04:00 coordinator run",
+        "enabled":         False,
+        "reason":          "reset after 04:00 coordinator run — surplus solar only",
         "set_at":          None,
         "calendar_result": None,
     }
@@ -452,7 +448,7 @@ async def _nightly_calendar_check() -> None:
     ical_urls = [u.strip() for u in os.getenv("GOOGLE_ICAL_URLS", "").split(",") if u.strip()]
 
     if not ical_urls:
-        log.info("[calendar_check] GOOGLE_ICAL_URLS not configured — overnight charging stays enabled")
+        log.info("[calendar_check] GOOGLE_ICAL_URLS not configured — overnight charging stays disabled (surplus-only mode)")
         return
 
     log.info("[calendar_check] Running nightly calendar check (%d feed(s))", len(ical_urls))
@@ -466,7 +462,7 @@ async def _nightly_calendar_check() -> None:
         }
         log.info("[calendar_check] %s", result["reasoning"])
     except Exception as exc:
-        log.error("[calendar_check] Check failed — leaving overnight charging enabled: %s", exc)
+        log.error("[calendar_check] Check failed — leaving overnight charging disabled (surplus-only): %s", exc)
 
 
 async def _activate_surplus_charging(amps: int, now: datetime) -> None:
@@ -493,9 +489,14 @@ async def _activate_surplus_charging(amps: int, now: datetime) -> None:
 
 
 async def _revert_to_tou_schedule() -> None:
-    """Restore the TOU schedule and reset surplus state."""
+    """Restore the base schedule and reset surplus state.
+
+    Uses _last_result["schedule"] (which may be [] when overnight is disabled —
+    surplus-only mode). Only falls back to recomputing if _last_result has no
+    schedule key at all (e.g. first boot before any run has completed).
+    """
     global _surplus_state
-    if _last_result and _last_result.get("schedule"):
+    if _last_result is not None and "schedule" in _last_result:
         schedule = _last_result["schedule"]
     else:
         schedule, _ = optimizer.compute_schedule(_cached_tariff)
