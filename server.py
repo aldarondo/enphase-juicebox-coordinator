@@ -1024,6 +1024,21 @@ def _run_sse(host: str, port: int):
         scheduler = _build_scheduler()
         _scheduler = scheduler
         scheduler.start()
+
+        # Populate tariff cache immediately so mode-switch jobs don't skip if
+        # the container starts after the 04:00 daily run (e.g. a mid-day restart).
+        global _cached_tariff
+        try:
+            fetched = await enphase_mcp.get_tariff()
+            if optimizer.validate_tariff(fetched):
+                _cached_tariff = fetched
+                _reschedule_battery_mode_jobs()
+                log.info("[startup] Tariff cached and battery-mode jobs rescheduled")
+            else:
+                log.warning("[startup] Startup tariff fetch failed validation — mode-switch jobs will skip until 04:00 run")
+        except Exception as exc:
+            log.warning("[startup] Could not fetch tariff at startup: %s — mode-switch jobs will skip until 04:00 run", exc)
+
         next_daily      = scheduler.get_job("daily_coordinator").next_run_time
         next_report     = scheduler.get_job("weekly_report").next_run_time
         next_surplus    = scheduler.get_job("surplus_monitor").next_run_time
