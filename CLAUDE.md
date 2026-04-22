@@ -26,6 +26,10 @@ Smart coordinator service that fetches TOU (time-of-use) tariffs from Enphase, i
 5. Run `pytest` to verify tests pass before making changes
 6. Do not make architectural changes without confirming with Charles first
 
+## Operations
+- Logs: use the Synology skill — `python skills/synology.py ssh "sudo docker logs enphase-juicebox-coordinator --since <timestamp> 2>&1 | tail -100" --sudo`
+- Full ops reference (log paths, deploy flow, troubleshooting): see `README.md`
+
 ## Key Files
 - `coordinator.py` — main orchestration logic
 - `enphase.py` — Enphase API client
