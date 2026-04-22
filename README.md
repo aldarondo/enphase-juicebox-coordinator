@@ -57,6 +57,25 @@ Summer has no super off-peak period — optimizer falls back to full 10:00–16:
 | 19:02 **weekdays** (Arizona, tariff-derived) | Post-peak battery mode switch: Self-Consumption → Savings (restore TOU-aware discharge for the evening) |
 | Every 15 min | Surplus monitor — activates/deactivates JuiceBox based on SOC + solar surplus |
 
+## Logs
+
+All scheduler actions and tool calls are logged with timestamps to:
+
+- **stdout** — `docker logs enphase-juicebox-coordinator -f`
+- **Persistent file** — `/volume1/docker/enphase-juicebox-coordinator/logs/coordinator.log` (survives container restarts)
+
+Rotating: 10 MB per file, 10 backups (~100 MB max). Override path with `LOG_DIR` env var.
+
+Structured prefixes make grep easy:
+
+| Prefix | Source |
+|---|---|
+| `[scheduler]` | APScheduler jobs (04:00 daily, mode switches) |
+| `[surplus_monitor]` | 15-min surplus poll activations/reverts |
+| `[overnight]` | Overnight mode push to JuiceBox |
+| `[calendar_check]` | 21:00 Google Calendar check |
+| `Tool:` | Manual MCP tool invocations |
+
 ## Deployment
 
 Images build automatically on push to `main` via GitHub Actions → GHCR → NAS pull.
@@ -95,6 +114,7 @@ Requires `claude-enphase` at `:8766/sse` and `claude-juicebox` at `:3001/sse` fo
 - Check Enphase MCP: `curl http://<NAS-IP>:8766/sse` (connection should open, not immediately error)
 - Check JuiceBox MCP: `curl http://<NAS-IP>:3001/sse` (same)
 - Check container logs: `docker logs enphase-juicebox-coordinator --tail 50`
+- Check persistent logs: `tail -f /volume1/docker/enphase-juicebox-coordinator/logs/coordinator.log`
 
 **Battery mode alerts not sending:**
 - Verify `ALERT_TO_EMAIL` env var is set (no default — alerts are silently skipped if unset)
