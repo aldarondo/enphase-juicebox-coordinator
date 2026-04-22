@@ -847,20 +847,21 @@ async def _surplus_monitor_run() -> None:
     """
     global _surplus_state
     if _surplus_lock.locked():
-        log.debug("[surplus_monitor] Skipping — previous poll still running")
+        log.info("[surplus_monitor] Skipping — previous poll still running")
         return
     async with _surplus_lock:
         now = datetime.now(ARIZONA)
 
         # Only run during daylight hours (06:00–20:00 Arizona)
         if now.hour < 6 or now.hour >= 20:
+            log.info("[surplus_monitor] Skipping — off-hours (%02d:%02d)", now.hour, now.minute)
             return
 
         # Determine peak window from cached tariff (fallback to APS default)
         peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
         if surplus_monitor.is_peak_time(now.hour, now.minute, peak["start_h"], peak["end_h"]):
-            log.debug("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
-                      peak["start_h"], peak["end_h"])
+            log.info("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
+                     peak["start_h"], peak["end_h"])
             # Safety: if we somehow entered surplus mode and peak just started, revert
             if _surplus_state["mode"] == "surplus_override":
                 log.warning("[surplus_monitor] Peak started while surplus override active — reverting")

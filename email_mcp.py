@@ -15,8 +15,9 @@ from mcp.client.sse import sse_client
 
 log = logging.getLogger(__name__)
 
-EMAIL_MCP_URL  = os.getenv("EMAIL_MCP_URL")
-ALERT_TO_EMAIL = os.getenv("ALERT_TO_EMAIL")
+EMAIL_MCP_URL    = os.getenv("EMAIL_MCP_URL")
+EMAIL_MCP_API_KEY = os.getenv("EMAIL_MCP_API_KEY")
+ALERT_TO_EMAIL   = os.getenv("ALERT_TO_EMAIL")
 
 
 async def send_email(subject: str, body: str, to: str | None = None) -> dict:
@@ -32,7 +33,8 @@ async def send_email(subject: str, body: str, to: str | None = None) -> dict:
     """
     recipient = to or ALERT_TO_EMAIL
     log.info("[email_mcp] Sending alert email to %s (subject=%r)", recipient, subject)
-    async with sse_client(EMAIL_MCP_URL) as (read, write):
+    headers = {"Authorization": f"Bearer {EMAIL_MCP_API_KEY}"} if EMAIL_MCP_API_KEY else {}
+    async with sse_client(EMAIL_MCP_URL, headers=headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(

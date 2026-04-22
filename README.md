@@ -106,7 +106,7 @@ pytest                  # run test suite
 python -m server        # run locally (stdio mode)
 ```
 
-Requires `claude-enphase` at `:8766/sse` and `claude-juicebox` at `:3001/sse` for full integration. Optional: `claude-email` at `:8770/sse` for failure alerts on scheduled battery-mode switches.
+Requires `claude-enphase` at `:8766/sse` and `claude-juicebox` at `:3001/sse` for full integration. Optional: `claude-email` at `:8768/sse` for failure alerts on scheduled battery-mode switches.
 
 ## Troubleshooting
 
@@ -118,7 +118,8 @@ Requires `claude-enphase` at `:8766/sse` and `claude-juicebox` at `:3001/sse` fo
 
 **Battery mode alerts not sending:**
 - Verify `ALERT_TO_EMAIL` env var is set (no default — alerts are silently skipped if unset)
-- Verify `EMAIL_MCP_URL` env var is set and `claude-email` is running
+- Verify `EMAIL_MCP_URL` is set (e.g. `http://172.18.0.1:8768/sse`) and `brian-email` is running
+- Verify `EMAIL_MCP_API_KEY` matches `MCP_API_KEY` in `brian-email/.env` — a mismatch returns 401 and silently fails
 - Check container logs for `[battery_mode] Failed to send failure alert email`
 
 **Surplus monitor not activating:**
