@@ -22,3 +22,5 @@ services:
       DRIVING_THRESHOLD_MILES: ${DRIVING_THRESHOLD_MILES:-80}
     ports:
       - "8767:8767"
+    volumes:
+      - /volume1/docker/enphase-juicebox-coordinator/logs:/app/logs

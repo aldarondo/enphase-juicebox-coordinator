@@ -26,7 +26,9 @@ Add to Claude Desktop (SSE, NAS deployment):
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
+import pathlib
 from datetime import datetime, timedelta
 
 import pytz
@@ -43,11 +45,24 @@ import juicebox_mcp
 import optimizer
 import surplus_monitor
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+_log_fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_sh = logging.StreamHandler()
+_sh.setFormatter(_log_fmt)
+_root.addHandler(_sh)
+
+_log_dir = pathlib.Path(os.environ.get("LOG_DIR", "/app/logs"))
+_log_dir.mkdir(parents=True, exist_ok=True)
+_fh = logging.handlers.RotatingFileHandler(
+    _log_dir / "coordinator.log",
+    maxBytes=10 * 1024 * 1024,  # 10 MB per file
+    backupCount=10,
+    encoding="utf-8",
 )
+_fh.setFormatter(_log_fmt)
+_root.addHandler(_fh)
+
 log = logging.getLogger("coordinator-mcp")
 ARIZONA = pytz.timezone("America/Phoenix")
 
