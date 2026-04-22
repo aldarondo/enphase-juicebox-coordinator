@@ -263,6 +263,72 @@ class TestEmailAlertFails:
 
 
 # ===========================================================================
+# Set response missing "mode" field → verifies via a follow-up read
+# ===========================================================================
+
+class TestSetResponseMissingMode:
+    """
+    Newer Enphase API responses could look like {"status": "ok", "queued": true}
+    with no mode echoed back. The switcher must verify via an independent read
+    rather than optimistically assuming success.
+    """
+
+    async def test_verifies_via_read_and_passes(self, monkeypatch, mock_email):
+        get_mock = AsyncMock(side_effect=[
+            {"mode": "savings"},            # initial read
+            {"mode": "self-consumption"},   # verify read after ambiguous set
+        ])
+        set_mock = AsyncMock(return_value={"status": "ok", "queued": True})
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_battery_mode", get_mock)
+        monkeypatch.setattr("battery_mode.enphase_mcp.set_battery_mode", set_mock)
+
+        result = await battery_mode.switch_to_self_consumption()
+
+        assert result["status"] == "ok"
+        assert result["applied_mode"] == "self-consumption"
+        assert get_mock.call_count == 2  # initial + verify
+        mock_email.assert_not_called()
+
+    async def test_verify_read_shows_wrong_mode_triggers_retry_and_email(self, monkeypatch, mock_email):
+        """
+        Set returns no mode; verify read shows mode was NOT actually applied.
+        Both attempts fail the same way → email alert.
+        """
+        get_mock = AsyncMock(side_effect=[
+            {"mode": "savings"},    # attempt 1 initial
+            {"mode": "savings"},    # attempt 1 verify (still savings — set didn't take)
+            {"mode": "savings"},    # attempt 2 initial
+            {"mode": "savings"},    # attempt 2 verify
+        ])
+        set_mock = AsyncMock(return_value={"queued": True})
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_battery_mode", get_mock)
+        monkeypatch.setattr("battery_mode.enphase_mcp.set_battery_mode", set_mock)
+
+        result = await battery_mode.switch_to_self_consumption()
+
+        assert result["status"] == "error"
+        assert result["attempts"] == 2
+        mock_email.assert_called_once()
+
+    async def test_both_responses_missing_mode_treated_as_failure(self, monkeypatch, mock_email):
+        """Set returns no mode AND verify read also returns no mode → failure."""
+        get_mock = AsyncMock(side_effect=[
+            {"mode": "savings"},           # initial
+            {"status": "unknown"},         # verify (no mode key)
+            {"mode": "savings"},           # retry initial
+            {"status": "unknown"},         # retry verify
+        ])
+        set_mock = AsyncMock(return_value={"queued": True})
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_battery_mode", get_mock)
+        monkeypatch.setattr("battery_mode.enphase_mcp.set_battery_mode", set_mock)
+
+        result = await battery_mode.switch_to_self_consumption()
+
+        assert result["status"] == "error"
+        mock_email.assert_called_once()
+
+
+# ===========================================================================
 # _extract_mode helper
 # ===========================================================================
 

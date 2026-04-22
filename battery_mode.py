@@ -121,12 +121,25 @@ async def switch_to(target_mode: str, label: str) -> dict:
                 return result
 
             set_payload = await enphase_mcp.set_battery_mode(target_mode)
-            confirmed_mode = _extract_mode(set_payload) or target_mode
+            confirmed_mode = _extract_mode(set_payload)
+
+            # If the set response doesn't echo back a mode (e.g. a response
+            # shape like {"status": "ok", "queued": true} from a newer Enphase
+            # API), fall back to an independent read to verify — never assume
+            # success from an ambiguous payload.
+            if confirmed_mode is None:
+                log.info(
+                    "[battery_mode] %s: set response had no mode field; verifying with a read",
+                    label,
+                )
+                verify_payload = await enphase_mcp.get_battery_mode()
+                confirmed_mode = _extract_mode(verify_payload)
+
             result["applied_mode"] = confirmed_mode
 
             if confirmed_mode != target_mode:
                 raise RuntimeError(
-                    f"Enphase confirmed mode={confirmed_mode!r}, expected {target_mode!r}"
+                    f"Enphase did not confirm target mode (got {confirmed_mode!r}, expected {target_mode!r})"
                 )
 
             result["status"]      = "ok"

@@ -79,13 +79,36 @@ class TestShiftedPeakWindow:
 
 
 class TestSchedulerRegistration:
-    """Verify the registered cron jobs are weekday-only."""
+    """Verify the registered cron jobs are weekday-only and in Arizona time."""
+
+    @staticmethod
+    def _field(trigger, name):
+        for f in trigger.fields:
+            if f.name == name:
+                return [str(e) for e in f.expressions]
+        return None
 
     def test_both_mode_jobs_are_weekday_only(self):
         scheduler = server._build_scheduler()
         for job_id in ("battery_mode_pre_peak", "battery_mode_post_peak"):
             job = scheduler.get_job(job_id)
-            # CronTrigger stores fields as list of field objects; stringify and check
-            trigger_str = str(job.trigger)
-            assert "day_of_week='mon-fri'" in trigger_str, \
-                f"{job_id} cron should be weekday-only, got: {trigger_str}"
+            assert self._field(job.trigger, "day_of_week") == ["mon-fri"], \
+                f"{job_id} should be weekday-only"
+
+    def test_pre_peak_time_fields(self):
+        job = server._build_scheduler().get_job("battery_mode_pre_peak")
+        assert self._field(job.trigger, "hour")   == ["15"]
+        assert self._field(job.trigger, "minute") == ["57"]
+
+    def test_post_peak_time_fields(self):
+        job = server._build_scheduler().get_job("battery_mode_post_peak")
+        assert self._field(job.trigger, "hour")   == ["19"]
+        assert self._field(job.trigger, "minute") == ["2"]
+
+    def test_mode_jobs_use_arizona_timezone(self):
+        """Jobs inherit scheduler timezone; verify it resolves to America/Phoenix."""
+        scheduler = server._build_scheduler()
+        for job_id in ("battery_mode_pre_peak", "battery_mode_post_peak"):
+            job = scheduler.get_job(job_id)
+            assert str(job.trigger.timezone) == "America/Phoenix", \
+                f"{job_id} should fire in Arizona time, got {job.trigger.timezone}"
