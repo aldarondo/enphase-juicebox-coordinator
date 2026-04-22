@@ -83,7 +83,7 @@ Images build automatically on push to `main` via GitHub Actions → GHCR → NAS
 
 ```bash
 pip install -r requirements.txt
-pytest                  # 88 tests
+pytest                  # 148 tests
 python -m server        # run locally (stdio mode)
 ```
 
