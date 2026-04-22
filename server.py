@@ -486,7 +486,11 @@ async def _scheduled_run():
 
     # Refresh cached tariff so surplus monitor + mode-switch jobs have current peak hours
     try:
-        _cached_tariff = await enphase_mcp.get_tariff()
+        fetched = await enphase_mcp.get_tariff()
+        if optimizer.validate_tariff(fetched):
+            _cached_tariff = fetched
+        else:
+            log.warning("[scheduler] Fetched tariff failed validation — keeping previous cached tariff")
         _reschedule_battery_mode_jobs()
     except Exception:
         log.warning("[scheduler] Could not refresh cached tariff after coordinator run")
@@ -663,8 +667,11 @@ async def _scheduled_pre_peak_mode_switch() -> None:
             "message": "Cached tariff has no weekday peak window; no switch needed today.",
         }
         return
-    log.info("[scheduler] Pre-peak battery mode switch (peak starts %02d:00)", peak["start_h"])
-    _last_mode_switch = await battery_mode.switch_to_self_consumption()
+    times = _peak_switch_times(_cached_tariff)
+    label = f"{times['pre_h']:02d}:{times['pre_m']:02d} pre-peak"
+    log.info("[scheduler] Pre-peak battery mode switch (peak starts %02d:00) label=%s",
+             peak["start_h"], label)
+    _last_mode_switch = await battery_mode.switch_to(battery_mode.MODE_SELF_CONSUMPTION, label=label)
 
 
 async def _scheduled_post_peak_mode_switch() -> None:
@@ -678,8 +685,11 @@ async def _scheduled_post_peak_mode_switch() -> None:
             "message": "Cached tariff has no weekday peak window; no switch needed today.",
         }
         return
-    log.info("[scheduler] Post-peak battery mode switch (peak ended %02d:00)", peak["end_h"])
-    _last_mode_switch = await battery_mode.switch_to_savings()
+    times = _peak_switch_times(_cached_tariff)
+    label = f"{times['post_h']:02d}:{times['post_m']:02d} post-peak"
+    log.info("[scheduler] Post-peak battery mode switch (peak ended %02d:00) label=%s",
+             peak["end_h"], label)
+    _last_mode_switch = await battery_mode.switch_to(battery_mode.MODE_SAVINGS, label=label)
 
 
 async def _apply_overnight_decision(enabled: bool, reasoning: str) -> dict | None:

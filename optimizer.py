@@ -22,6 +22,37 @@ log = logging.getLogger(__name__)
 APS_DEFAULT_PEAK = {"start_h": 16, "end_h": 19, "source": "APS default (16:00–19:00 weekdays)"}
 
 
+def validate_tariff(tariff: dict) -> bool:
+    """
+    Return True if the tariff has a recognizable structure.
+    Logs a warning and returns False for malformed tariffs rather than
+    letting downstream functions silently misparse them.
+    """
+    section = tariff.get("purchase") or tariff.get("tariff") or tariff.get("tariff_plan") or tariff
+    if not isinstance(section, dict):
+        log.warning("[optimizer] validate_tariff: top-level section is not a dict")
+        return False
+    seasons = section.get("seasons", [])
+    if not seasons:
+        log.warning("[optimizer] validate_tariff: no seasons in tariff")
+        return False
+    for season in seasons:
+        for key in ("startMonth", "start_month"):
+            val = season.get(key)
+            if val is not None:
+                try:
+                    m = int(val)
+                    if not (1 <= m <= 12):
+                        log.warning("[optimizer] validate_tariff: invalid startMonth=%s in season %s",
+                                    val, season.get("id", "?"))
+                        return False
+                except (TypeError, ValueError):
+                    log.warning("[optimizer] validate_tariff: non-integer startMonth=%r in season %s",
+                                val, season.get("id", "?"))
+                    return False
+    return True
+
+
 def _active_season(seasons: list) -> dict | None:
     """Pick the season whose month range covers today."""
     today_month = date.today().month
@@ -38,6 +69,7 @@ def _active_season(seasons: list) -> dict | None:
                 start = int(s.get("startMonth", s.get("start_month", 1)))
                 end   = int(s.get("endMonth",   s.get("end_month",   12)))
             except (TypeError, ValueError):
+                log.warning("[optimizer] Season has non-integer startMonth/endMonth: %s", s.get("id", "?"))
                 continue
             # Handle wraparound (e.g. Nov–Apr: start=11, end=4)
             if start <= end:
@@ -46,6 +78,7 @@ def _active_season(seasons: list) -> dict | None:
             else:
                 if today_month >= start or today_month <= end:
                     return s
+        log.warning("[optimizer] No season matched month %d — falling back to first season", today_month)
         return seasons[0] if seasons else None
 
     # Legacy format: only start_month → return last season that started by today

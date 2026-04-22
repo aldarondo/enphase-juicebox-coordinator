@@ -57,8 +57,15 @@ async def _geocode(address: str, client: httpx.AsyncClient) -> tuple[float, floa
             timeout=10.0,
         )
         results = resp.json()
-        if results:
-            return float(results[0]["lat"]), float(results[0]["lon"])
+        if not results or "lat" not in results[0] or "lon" not in results[0]:
+            log.warning("[calendar_check] Nominatim returned no valid result for '%s'", address)
+            return None
+        lat, lon = float(results[0]["lat"]), float(results[0]["lon"])
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            log.warning("[calendar_check] Nominatim returned invalid coordinates for '%s': lat=%s lon=%s",
+                        address, lat, lon)
+            return None
+        return lat, lon
     except Exception as exc:
         log.warning("[calendar_check] Geocoding failed for '%s': %s", address, exc)
     return None

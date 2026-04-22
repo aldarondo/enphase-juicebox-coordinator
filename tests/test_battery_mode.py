@@ -178,10 +178,26 @@ class TestBothAttemptsFail:
         kwargs = mocks.call_args.kwargs
         assert "15:57 pre-peak" in kwargs["subject"]
 
+    async def test_email_subject_mentions_retries_exhausted(self, mocks):
+        await battery_mode.switch_to_self_consumption()
+        kwargs = mocks.call_args.kwargs
+        assert "retries exhausted" in kwargs["subject"].lower()
+
+    async def test_email_body_mentions_manual_intervention(self, mocks):
+        await battery_mode.switch_to_self_consumption()
+        kwargs = mocks.call_args.kwargs
+        assert "manual intervention" in kwargs["body"].lower()
+
     async def test_email_body_mentions_consequence(self, mocks):
         await battery_mode.switch_to_self_consumption()
         kwargs = mocks.call_args.kwargs
         assert "battery will cycle" in kwargs["body"].lower() or "cycle" in kwargs["body"].lower()
+
+    async def test_email_no_hardcoded_recipient(self, mocks):
+        """send_email must not hardcode 'to' — recipient comes from ALERT_TO_EMAIL env var."""
+        await battery_mode.switch_to_self_consumption()
+        kwargs = mocks.call_args.kwargs
+        assert "to" not in kwargs, "recipient should not be hardcoded; let email_mcp use ALERT_TO_EMAIL"
 
 
 # ===========================================================================
