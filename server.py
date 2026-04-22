@@ -35,6 +35,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+import battery_mode
 import calendar_check
 import coordinator
 import enphase_mcp
@@ -56,6 +57,13 @@ app = Server("enphase-juicebox-coordinator")
 _last_result:   dict | None = None
 _last_report:   dict | None = None
 _cached_tariff: dict        = {}   # updated each daily coordinator run
+_last_mode_switch: dict | None = None   # most recent battery-mode switch result
+_scheduler:     "AsyncIOScheduler | None" = None  # exposed so tariff refresh can reschedule mode-switch jobs
+
+# Minutes before peak_start (pre-peak switch) and after peak_end (post-peak
+# switch). Tight buffers — large buffers waste off-peak / post-peak time.
+PRE_PEAK_BUFFER_MIN  = 3
+POST_PEAK_BUFFER_MIN = 2
 _overnight_charging: dict   = {
     "enabled":         False,
     "reason":          "default — surplus solar only until 21:00 calendar check",
@@ -133,7 +141,9 @@ TOOLS = [
             "Manually override tonight's charging mode. "
             "Pass enable=true to force TOU overnight charging (e.g. you know "
             "tomorrow will be a long drive), or enable=false to skip overnight "
-            "charging (surplus solar only). Resets to default after the 04:00 run."
+            "charging (surplus solar only). The schedule is pushed to the "
+            "JuiceBox immediately so charging can start/stop right away. "
+            "Flag resets to disabled (surplus-only) after the next 04:00 run."
         ),
         inputSchema={
             "type": "object",
@@ -177,7 +187,40 @@ TOOLS = [
             "Trigger the calendar check now (normally runs at 21:00 Arizona). "
             "Reads Google Calendar iCal feeds, finds tomorrow's events, geocodes "
             "locations to estimate driving distance, and enables overnight TOU "
-            "charging if a long trip (>50 miles) is detected."
+            "charging if a long trip (>50 miles) is detected. Immediately "
+            "pushes the resulting schedule to JuiceBox — TOU schedule if enabled, "
+            "or empty (surplus-only) if not — so charging can start right away."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    Tool(
+        name="switch_battery_mode",
+        description=(
+            "Manually switch the Enphase battery profile. Normally handled by "
+            "the scheduler: Savings → Self-Consumption at 15:57 Arizona (before "
+            "the 16:00 peak), Self-Consumption → Savings at 19:02 (after 19:00 "
+            "peak). Use this tool for on-demand switches, retries after a "
+            "scheduled failure, or manual testing."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type":        "string",
+                    "enum":        ["self-consumption", "savings"],
+                    "description": "Target Enphase battery profile.",
+                },
+            },
+            "required": ["mode"],
+        },
+    ),
+    Tool(
+        name="get_battery_mode_status",
+        description=(
+            "Return the result of the most recent battery-mode switch (scheduled "
+            "or manual): target mode, applied mode, status (ok/skipped/error), "
+            "attempts, and any errors. Useful for verifying the 15:57 / 19:02 "
+            "scheduled switches ran cleanly."
         ),
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
@@ -266,11 +309,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "calendar_result": None,
         })
         log.info("Tool: set_overnight_mode → enabled=%s  reason=%s", enabled, reason)
+
+        push_result = await _apply_overnight_decision(
+            enabled,
+            reasoning=f"Manual override: {reason}",
+        )
+
         return [TextContent(type="text", text=json.dumps({
-            "status":  "ok",
-            "enabled": enabled,
-            "reason":  reason,
-            "note":    "Resets to default (enabled=True) after the 04:00 coordinator run.",
+            "status":       "ok" if push_result else "push_failed",
+            "enabled":      enabled,
+            "reason":       reason,
+            "juicebox_ok":  bool(push_result and push_result.get("juicebox_ok")),
+            "note":         "Flag resets to disabled (surplus-only) after the next 04:00 coordinator run.",
         }, indent=2))]
 
     if name == "get_surplus_status":
@@ -300,6 +350,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         log.info("Tool: run_calendar_check triggered manually")
         await _nightly_calendar_check()
         return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
+
+    if name == "switch_battery_mode":
+        global _last_mode_switch
+        mode = arguments.get("mode")
+        if mode not in (battery_mode.MODE_SELF_CONSUMPTION, battery_mode.MODE_SAVINGS):
+            return [TextContent(type="text", text=json.dumps(
+                {"status": "error", "error": f"invalid mode: {mode!r}"}
+            ))]
+        log.info("Tool: switch_battery_mode(mode=%s) triggered manually", mode)
+        _last_mode_switch = await battery_mode.switch_to(mode, label="manual")
+        return [TextContent(type="text", text=json.dumps(_last_mode_switch, indent=2))]
+
+    if name == "get_battery_mode_status":
+        if _last_mode_switch is None:
+            payload = {
+                "status":  "never_run",
+                "message": "No battery-mode switch has occurred this session. "
+                           "Scheduled switches run at 15:57 and 19:02 Arizona.",
+            }
+        else:
+            payload = _last_mode_switch
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
     return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
@@ -345,9 +417,10 @@ async def _scheduled_run():
         "calendar_result": None,
     }
 
-    # Refresh cached tariff so surplus monitor has current peak hours
+    # Refresh cached tariff so surplus monitor + mode-switch jobs have current peak hours
     try:
         _cached_tariff = await enphase_mcp.get_tariff()
+        _reschedule_battery_mode_jobs()
     except Exception:
         log.warning("[scheduler] Could not refresh cached tariff after coordinator run")
 
@@ -451,14 +524,155 @@ async def _scheduled_weekly_report():
     log.info("=" * 60)
 
 
+def _peak_switch_times(tariff: dict) -> dict:
+    """
+    Derive pre-peak and post-peak mode-switch times from the tariff's peak window.
+
+    Returns {
+        "pre_h": int, "pre_m": int,      # PRE_PEAK_BUFFER_MIN before peak_start
+        "post_h": int, "post_m": int,    # POST_PEAK_BUFFER_MIN after peak_end
+        "peak": {...},                   # the peak dict from optimizer
+        "source": "tariff" | "default",
+    }
+
+    Falls back to APS default (16:00–19:00) if the tariff can't be parsed —
+    APS peak has been stable for years, so this is a safe fallback.
+    """
+    peak   = optimizer._find_peak_weekday_hours(tariff)
+    source = "tariff" if peak else "default"
+    if not peak:
+        peak = optimizer.APS_DEFAULT_PEAK
+
+    pre_h = peak["start_h"] - 1
+    pre_m = 60 - PRE_PEAK_BUFFER_MIN
+    post_h = peak["end_h"]
+    post_m = POST_PEAK_BUFFER_MIN
+    return {"pre_h": pre_h, "pre_m": pre_m,
+            "post_h": post_h, "post_m": post_m,
+            "peak": peak, "source": source}
+
+
+def _reschedule_battery_mode_jobs() -> None:
+    """Reschedule the pre/post-peak jobs using the current cached tariff."""
+    if _scheduler is None:
+        return
+    times = _peak_switch_times(_cached_tariff)
+    try:
+        _scheduler.reschedule_job(
+            "battery_mode_pre_peak",
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=times["pre_h"],
+            minute=times["pre_m"],
+            timezone=ARIZONA,
+        )
+        _scheduler.reschedule_job(
+            "battery_mode_post_peak",
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=times["post_h"],
+            minute=times["post_m"],
+            timezone=ARIZONA,
+        )
+        peak = times["peak"]
+        log.info(
+            "[scheduler] Battery-mode jobs rescheduled from %s: pre=%02d:%02d  post=%02d:%02d  (peak %02d:00–%02d:00 weekdays)",
+            times["source"], times["pre_h"], times["pre_m"],
+            times["post_h"], times["post_m"],
+            peak["start_h"], peak["end_h"],
+        )
+    except Exception as exc:
+        log.warning("[scheduler] Could not reschedule battery-mode jobs: %s", exc)
+
+
+async def _scheduled_pre_peak_mode_switch() -> None:
+    """Weekday pre-peak: Savings → Self-Consumption."""
+    global _last_mode_switch
+    peak = optimizer._find_peak_weekday_hours(_cached_tariff)
+    if peak is None:
+        log.info("[scheduler] Pre-peak mode switch skipped — tariff has no weekday peak window")
+        _last_mode_switch = {
+            "status":  "skipped_no_peak",
+            "message": "Cached tariff has no weekday peak window; no switch needed today.",
+        }
+        return
+    log.info("[scheduler] Pre-peak battery mode switch (peak starts %02d:00)", peak["start_h"])
+    _last_mode_switch = await battery_mode.switch_to_self_consumption()
+
+
+async def _scheduled_post_peak_mode_switch() -> None:
+    """Weekday post-peak: Self-Consumption → Savings."""
+    global _last_mode_switch
+    peak = optimizer._find_peak_weekday_hours(_cached_tariff)
+    if peak is None:
+        log.info("[scheduler] Post-peak mode switch skipped — tariff has no weekday peak window")
+        _last_mode_switch = {
+            "status":  "skipped_no_peak",
+            "message": "Cached tariff has no weekday peak window; no switch needed today.",
+        }
+        return
+    log.info("[scheduler] Post-peak battery mode switch (peak ended %02d:00)", peak["end_h"])
+    _last_mode_switch = await battery_mode.switch_to_savings()
+
+
+async def _apply_overnight_decision(enabled: bool, reasoning: str) -> dict | None:
+    """
+    Push the overnight-charging decision to the JuiceBox right now.
+
+    Shared by `_nightly_calendar_check` (21:00 scheduler) and the
+    `set_overnight_mode` MCP tool so both paths have the same "decide →
+    immediately program JuiceBox" behavior. The 04:00 daily run is the
+    safety-net / idempotent retry.
+
+      enabled=True  → coordinator.run()                          (push TOU)
+      enabled=False → juicebox_mcp.set_charging_schedule([])     (clear)
+
+    Returns the updated _last_result dict on success, or None on push
+    failure (caller logs; 04:00 run retries).
+    """
+    global _last_result
+    try:
+        if enabled:
+            log.info("[overnight] Pushing TOU schedule to JuiceBox — %s", reasoning)
+            _last_result = await coordinator.run()
+            log.info("[overnight] JuiceBox programmed — status: %s", _last_result.get("status"))
+        else:
+            log.info("[overnight] Clearing JuiceBox schedule (surplus-only) — %s", reasoning)
+            jb_resp = await juicebox_mcp.set_charging_schedule([])
+            now_iso = datetime.now(ARIZONA).isoformat()
+            _last_result = {
+                "started_at":        now_iso,
+                "status":            "ok",
+                "schedule":          [],
+                "reasoning":         reasoning,
+                "juicebox_ok":       True,
+                "juicebox_response": jb_resp,
+                "errors":            [],
+                "finished_at":       now_iso,
+            }
+        return _last_result
+    except Exception as exc:
+        log.error(
+            "[overnight] Failed to update JuiceBox: %s  (04:00 safety-net run will retry)",
+            exc,
+        )
+        return None
+
+
 async def _nightly_calendar_check() -> None:
     """
     Runs at 21:00 Arizona. Fetches tomorrow's calendar events, estimates total
-    driving distance, and sets _overnight_charging accordingly.
+    driving distance, sets _overnight_charging, and pushes the resulting
+    schedule to the JuiceBox immediately so overnight charging can actually
+    start at 22:00 instead of waiting for the 04:00 safety-net run (by which
+    time the morning commute is only a few hours away).
 
-    If tomorrow's driving >= DRIVING_THRESHOLD_MILES, overnight TOU charging
-    is enabled so the car won't wake up empty waiting for the sun.
-    If no iCal URLs are configured, overnight charging stays enabled (safe default).
+    Flow:
+      enabled  → coordinator.run()            (fetch tariff + push TOU schedule)
+      disabled → juicebox_mcp.set_charging_schedule([])  (clear — surplus-only)
+
+    The 04:00 daily run re-asserts whichever schedule the flag calls for, so a
+    21:00 push failure is self-healing. No iCal URLs configured → stay disabled.
     """
     global _overnight_charging
     ical_urls = [u.strip() for u in os.getenv("GOOGLE_ICAL_URLS", "").split(",") if u.strip()]
@@ -470,15 +684,23 @@ async def _nightly_calendar_check() -> None:
     log.info("[calendar_check] Running nightly calendar check (%d feed(s))", len(ical_urls))
     try:
         result = await calendar_check.check_tomorrow_driving(ical_urls)
-        _overnight_charging = {
-            "enabled":         result["overnight_charging_needed"],
-            "reason":          result["reasoning"],
-            "set_at":          datetime.now(ARIZONA).isoformat(),
-            "calendar_result": result,
-        }
-        log.info("[calendar_check] %s", result["reasoning"])
     except Exception as exc:
         log.error("[calendar_check] Check failed — leaving overnight charging disabled (surplus-only): %s", exc)
+        return
+
+    enabled = result["overnight_charging_needed"]
+    _overnight_charging = {
+        "enabled":         enabled,
+        "reason":          result["reasoning"],
+        "set_at":          datetime.now(ARIZONA).isoformat(),
+        "calendar_result": result,
+    }
+    log.info("[calendar_check] %s", result["reasoning"])
+
+    await _apply_overnight_decision(
+        enabled,
+        reasoning=f"21:00 calendar check: {result['reasoning']}",
+    )
 
 
 async def _activate_surplus_charging(amps: int, now: datetime) -> None:
@@ -629,22 +851,48 @@ def _build_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="calendar_check",
     )
+    # Mode-switch jobs: weekdays only (APS peak is weekday-only).
+    # Times seeded from APS default (16:00–19:00 → 15:57 / 19:02); reschedule
+    # happens after every tariff refresh using the actual peak window.
+    initial = _peak_switch_times({})
+    scheduler.add_job(
+        _scheduled_pre_peak_mode_switch,
+        "cron",
+        day_of_week="mon-fri",
+        hour=initial["pre_h"],
+        minute=initial["pre_m"],
+        id="battery_mode_pre_peak",
+    )
+    scheduler.add_job(
+        _scheduled_post_peak_mode_switch,
+        "cron",
+        day_of_week="mon-fri",
+        hour=initial["post_h"],
+        minute=initial["post_m"],
+        id="battery_mode_post_peak",
+    )
     return scheduler
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def _run_stdio():
+    global _scheduler
     scheduler = _build_scheduler()
+    _scheduler = scheduler
     scheduler.start()
-    next_daily    = scheduler.get_job("daily_coordinator").next_run_time
-    next_report   = scheduler.get_job("weekly_report").next_run_time
-    next_surplus  = scheduler.get_job("surplus_monitor").next_run_time
-    next_calendar = scheduler.get_job("calendar_check").next_run_time
+    next_daily      = scheduler.get_job("daily_coordinator").next_run_time
+    next_report     = scheduler.get_job("weekly_report").next_run_time
+    next_surplus    = scheduler.get_job("surplus_monitor").next_run_time
+    next_calendar   = scheduler.get_job("calendar_check").next_run_time
+    next_pre_peak   = scheduler.get_job("battery_mode_pre_peak").next_run_time
+    next_post_peak  = scheduler.get_job("battery_mode_post_peak").next_run_time
     log.info("Coordinator MCP server starting (stdio)")
     log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
     log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
     log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
     log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
+    log.info("  Pre-peak switch:  next run at %s (America/Phoenix)", next_pre_peak)
+    log.info("  Post-peak switch: next run at %s (America/Phoenix)", next_post_peak)
     log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
@@ -677,17 +925,23 @@ def _run_sse(host: str, port: int):
 
     @asynccontextmanager
     async def lifespan(starlette_app):
+        global _scheduler
         scheduler = _build_scheduler()
+        _scheduler = scheduler
         scheduler.start()
-        next_daily    = scheduler.get_job("daily_coordinator").next_run_time
-        next_report   = scheduler.get_job("weekly_report").next_run_time
-        next_surplus  = scheduler.get_job("surplus_monitor").next_run_time
-        next_calendar = scheduler.get_job("calendar_check").next_run_time
+        next_daily      = scheduler.get_job("daily_coordinator").next_run_time
+        next_report     = scheduler.get_job("weekly_report").next_run_time
+        next_surplus    = scheduler.get_job("surplus_monitor").next_run_time
+        next_calendar   = scheduler.get_job("calendar_check").next_run_time
+        next_pre_peak   = scheduler.get_job("battery_mode_pre_peak").next_run_time
+        next_post_peak  = scheduler.get_job("battery_mode_post_peak").next_run_time
         log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
         log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
         log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
         log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
         log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
+        log.info("  Pre-peak switch:  next run at %s (America/Phoenix)", next_pre_peak)
+        log.info("  Post-peak switch: next run at %s (America/Phoenix)", next_post_peak)
         log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
         yield
         scheduler.shutdown()

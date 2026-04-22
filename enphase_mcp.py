@@ -49,6 +49,67 @@ async def get_energy_summary(date_str: str | None = None) -> dict:
                 ) from exc
 
 
+async def get_battery_mode() -> dict:
+    """
+    Call enphase_get_battery_mode on the claude-enphase MCP server.
+
+    Returns the current Enphase battery profile (e.g. "self-consumption",
+    "savings", "backup-only"). Exact payload shape depends on claude-enphase;
+    callers should read the "mode" field.
+
+    Raises:
+        Exception if the MCP server is unreachable or the tool call fails.
+    """
+    log.info("[enphase_mcp] Calling enphase_get_battery_mode")
+    async with sse_client(ENPHASE_MCP_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("enphase_get_battery_mode", {})
+            if result.isError or not result.content:
+                text = result.content[0].text if result.content else "empty response"
+                raise RuntimeError(f"enphase_get_battery_mode failed: {text}")
+            text = result.content[0].text
+            if text.startswith("Error:"):
+                raise RuntimeError(f"enphase_get_battery_mode failed: {text}")
+            try:
+                return json.loads(text)
+            except (ValueError, AttributeError) as exc:
+                raise RuntimeError(
+                    f"enphase_get_battery_mode returned non-JSON: {text[:200]}"
+                ) from exc
+
+
+async def set_battery_mode(mode: str) -> dict:
+    """
+    Call enphase_set_battery_mode on the claude-enphase MCP server.
+
+    Args:
+        mode: Target Enphase battery profile (e.g. "self-consumption", "savings").
+
+    Returns the server's response dict, which should include the applied mode.
+
+    Raises:
+        Exception if the MCP server is unreachable or the tool call fails.
+    """
+    log.info("[enphase_mcp] Calling enphase_set_battery_mode(mode=%s)", mode)
+    async with sse_client(ENPHASE_MCP_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("enphase_set_battery_mode", {"mode": mode})
+            if result.isError or not result.content:
+                text = result.content[0].text if result.content else "empty response"
+                raise RuntimeError(f"enphase_set_battery_mode failed: {text}")
+            text = result.content[0].text
+            if text.startswith("Error:"):
+                raise RuntimeError(f"enphase_set_battery_mode failed: {text}")
+            try:
+                return json.loads(text)
+            except (ValueError, AttributeError) as exc:
+                raise RuntimeError(
+                    f"enphase_set_battery_mode returned non-JSON: {text[:200]}"
+                ) from exc
+
+
 async def get_tariff() -> dict:
     """
     Call enphase_get_tariff on the claude-enphase MCP server.
