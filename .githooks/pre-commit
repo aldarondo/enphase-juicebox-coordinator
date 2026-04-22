@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# pre-commit — block commits that contain token-like strings.
+# Finds the shared hub scanner by walking upward from the repo root.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Walk upward from the repo root looking for .hub/hooks/scan-for-tokens.mjs.
+scanner=""
+dir="$repo_root"
+while [[ "$dir" != "/" && "$dir" != "" ]]; do
+  candidate="$dir/.hub/hooks/scan-for-tokens.mjs"
+  if [[ -f "$candidate" ]]; then
+    scanner="$candidate"
+    break
+  fi
+  dir="$(dirname "$dir")"
+done
+
+if [[ -z "$scanner" ]]; then
+  echo "pre-commit: scan-for-tokens.mjs not found (skipping token scan)" >&2
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node not found (skipping token scan)" >&2
+  exit 0
+fi
+
+exec node "$scanner"

@@ -83,11 +83,34 @@ Images build automatically on push to `main` via GitHub Actions → GHCR → NAS
 
 ```bash
 pip install -r requirements.txt
-pytest                  # 148 tests
+pytest                  # run test suite
 python -m server        # run locally (stdio mode)
 ```
 
 Requires `claude-enphase` at `:8766/sse` and `claude-juicebox` at `:3001/sse` for full integration. Optional: `claude-email` at `:8770/sse` for failure alerts on scheduled battery-mode switches.
+
+## Troubleshooting
+
+**Coordinator reports "error" status:**
+- Check Enphase MCP: `curl http://<NAS-IP>:8766/sse` (connection should open, not immediately error)
+- Check JuiceBox MCP: `curl http://<NAS-IP>:3001/sse` (same)
+- Check container logs: `docker logs enphase-juicebox-coordinator --tail 50`
+
+**Battery mode alerts not sending:**
+- Verify `ALERT_TO_EMAIL` env var is set (no default — alerts are silently skipped if unset)
+- Verify `EMAIL_MCP_URL` env var is set and `claude-email` is running
+- Check container logs for `[battery_mode] Failed to send failure alert email`
+
+**Surplus monitor not activating:**
+- Call `get_surplus_status` to check current SOC, production, and `surplus_poll_count`
+- Activation requires `ACTIVATION_POLLS=2` consecutive readings above threshold
+- Charging is blocked during the peak window (16:00–19:00 + 15-min buffer each side)
+- Requires `battery_soc >= 95%` AND `production − consumption >= 400W`
+
+**JuiceBox schedule not updating after overnight mode change:**
+- `set_overnight_mode` pushes to JuiceBox immediately — check its response for `juicebox_ok`
+- If push failed, the 04:00 daily run retries automatically
+- Force a retry: call `run_coordinator` (if enabled) or `set_overnight_mode` again
 
 ## Enphase Battery Mode Switching
 

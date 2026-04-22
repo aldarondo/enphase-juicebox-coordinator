@@ -15,8 +15,8 @@ from mcp.client.sse import sse_client
 
 log = logging.getLogger(__name__)
 
-EMAIL_MCP_URL  = os.getenv("EMAIL_MCP_URL",  "http://host.docker.internal:8770/sse")
-ALERT_TO_EMAIL = os.getenv("ALERT_TO_EMAIL", "charles.aldarondo@gmail.com")
+EMAIL_MCP_URL  = os.getenv("EMAIL_MCP_URL")
+ALERT_TO_EMAIL = os.getenv("ALERT_TO_EMAIL")
 
 
 async def send_email(subject: str, body: str, to: str | None = None) -> dict:

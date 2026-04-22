@@ -91,6 +91,8 @@ class TestNoTripClearsSchedule:
         })
         run_mock = AsyncMock(return_value={"status": "ok"})
         clear_mock = AsyncMock(return_value={"success": True})
+        # get_tariff is now called to compute the daytime-only schedule
+        tariff_mock = AsyncMock(return_value={})
         monkeypatch.setattr(
             "server.calendar_check.check_tomorrow_driving", check_mock,
         )
@@ -98,11 +100,18 @@ class TestNoTripClearsSchedule:
         monkeypatch.setattr(
             "server.juicebox_mcp.set_charging_schedule", clear_mock,
         )
-        return {"check": check_mock, "run": run_mock, "clear": clear_mock}
+        monkeypatch.setattr("server.enphase_mcp.get_tariff", tariff_mock)
+        return {"check": check_mock, "run": run_mock, "clear": clear_mock, "tariff": tariff_mock}
 
-    async def test_clear_called_with_empty_list(self, mocks):
+    async def test_daytime_schedule_pushed(self, mocks):
+        # No trip → daytime-only window pushed (not empty []); JuiceBox defaults
+        # to charging freely when given [], so we push a real restricting schedule.
         await server._nightly_calendar_check()
-        mocks["clear"].assert_called_once_with([])
+        mocks["clear"].assert_called_once()
+        pushed = mocks["clear"].call_args[0][0]
+        assert isinstance(pushed, list) and len(pushed) > 0, "expected a non-empty daytime schedule"
+        weekday = next(w for w in pushed if "mon" in w.get("days", []))
+        assert weekday["start"] != "19:00", "overnight wrap-around schedule must not be pushed"
 
     async def test_coordinator_run_not_called(self, mocks):
         await server._nightly_calendar_check()
@@ -112,9 +121,10 @@ class TestNoTripClearsSchedule:
         await server._nightly_calendar_check()
         assert server._overnight_charging["enabled"] is False
 
-    async def test_last_result_reflects_clear(self, mocks):
+    async def test_last_result_reflects_daytime_schedule(self, mocks):
         await server._nightly_calendar_check()
-        assert server._last_result["schedule"] == []
+        assert isinstance(server._last_result["schedule"], list)
+        assert len(server._last_result["schedule"]) > 0
         assert server._last_result["status"] == "ok"
 
 

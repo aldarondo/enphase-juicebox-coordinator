@@ -96,15 +96,24 @@ class TestEnableFalse:
     def mocks(self, monkeypatch):
         run_mock = AsyncMock()
         clear_mock = AsyncMock(return_value={"success": True})
+        # get_tariff is now called to compute the daytime-only schedule
+        tariff_mock = AsyncMock(return_value={})
         monkeypatch.setattr("server.coordinator.run", run_mock)
         monkeypatch.setattr(
             "server.juicebox_mcp.set_charging_schedule", clear_mock,
         )
-        return {"run": run_mock, "clear": clear_mock}
+        monkeypatch.setattr("server.enphase_mcp.get_tariff", tariff_mock)
+        return {"run": run_mock, "clear": clear_mock, "tariff": tariff_mock}
 
-    async def test_clear_called_with_empty_list(self, mocks):
+    async def test_daytime_schedule_pushed(self, mocks):
+        # enable=False → daytime-only window pushed (not []); [] leaves JuiceBox
+        # in its hardware default (charge freely), defeating surplus-only mode.
         await _invoke("set_overnight_mode", {"enable": False, "reason": "surplus only"})
-        mocks["clear"].assert_called_once_with([])
+        mocks["clear"].assert_called_once()
+        pushed = mocks["clear"].call_args[0][0]
+        assert isinstance(pushed, list) and len(pushed) > 0, "expected a non-empty daytime schedule"
+        weekday = next(w for w in pushed if "mon" in w.get("days", []))
+        assert weekday["start"] != "19:00", "overnight wrap-around schedule must not be pushed"
 
     async def test_run_not_called(self, mocks):
         await _invoke("set_overnight_mode", {"enable": False, "reason": "surplus only"})
@@ -114,9 +123,10 @@ class TestEnableFalse:
         await _invoke("set_overnight_mode", {"enable": False, "reason": "surplus only"})
         assert server._overnight_charging["enabled"] is False
 
-    async def test_last_result_cleared(self, mocks):
+    async def test_last_result_has_daytime_schedule(self, mocks):
         await _invoke("set_overnight_mode", {"enable": False, "reason": "surplus only"})
-        assert server._last_result["schedule"] == []
+        assert isinstance(server._last_result["schedule"], list)
+        assert len(server._last_result["schedule"]) > 0
 
 
 # ===========================================================================

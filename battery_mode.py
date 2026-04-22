@@ -60,12 +60,14 @@ def _extract_mode(payload) -> str | None:
 
 async def _send_failure_alert(label: str, target_mode: str, error: str) -> None:
     """Notify Charles that a mode switch failed after retry."""
-    subject = f"[enphase-coordinator] {label} mode switch FAILED"
+    subject = f"ALERT: [enphase-coordinator] {label} mode switch FAILED (retries exhausted)"
     body = (
-        f"Scheduled mode switch failed: {label}\n"
+        f"Scheduled mode switch failed after all retry attempts: {label}\n"
         f"Target mode: {target_mode}\n"
         f"Error: {error}\n\n"
+        f"ALL RETRIES EXHAUSTED — manual intervention required.\n\n"
         f"Consequence: {FAILURE_CONSEQUENCE.get(target_mode, 'Unknown mode — manual check recommended.')}\n\n"
+        f"This condition will persist until the next scheduled switch or manual correction.\n\n"
         f"Recovery: run `switch_battery_mode` in the coordinator to retry, "
         f"or change the mode manually in the Enphase app."
     )

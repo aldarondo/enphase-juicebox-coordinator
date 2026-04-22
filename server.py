@@ -54,11 +54,39 @@ ARIZONA = pytz.timezone("America/Phoenix")
 app = Server("enphase-juicebox-coordinator")
 
 # ── Shared state ──────────────────────────────────────────────────────────────
-_last_result:   dict | None = None
-_last_report:   dict | None = None
-_cached_tariff: dict        = {}   # updated each daily coordinator run
-_last_mode_switch: dict | None = None   # most recent battery-mode switch result
-_scheduler:     "AsyncIOScheduler | None" = None  # exposed so tariff refresh can reschedule mode-switch jobs
+_last_result:      dict | None = None
+_last_report:      dict | None = None
+_cached_tariff:    dict        = {}
+_last_mode_switch: dict | None = None
+_scheduler:        "AsyncIOScheduler | None" = None
+
+
+def _initialize_state() -> None:
+    """Set all global state to safe defaults. Called at server startup."""
+    global _last_result, _last_report, _cached_tariff, _last_mode_switch
+    global _overnight_charging, _surplus_state
+    _last_result = None
+    _last_report = None
+    _cached_tariff = {}
+    _last_mode_switch = None
+    _overnight_charging = {
+        "enabled":         False,
+        "reason":          "default — surplus solar only until 21:00 calendar check",
+        "set_at":          None,
+        "calendar_result": None,
+    }
+    _surplus_state = {
+        "mode":               "tou_schedule",
+        "surplus_poll_count":    0,
+        "no_surplus_poll_count": 0,
+        "battery_soc":        None,
+        "production_w":       None,
+        "consumption_w":      None,
+        "surplus_w":          None,
+        "charge_amps":        None,
+        "last_checked":       None,
+        "last_action":        None,
+    }
 
 # Minutes before peak_start (pre-peak switch) and after peak_end (post-peak
 # switch). Tight buffers — large buffers waste off-peak / post-peak time.
@@ -82,6 +110,7 @@ _surplus_state: dict        = {
     "last_checked":       None,
     "last_action":        None,
 }
+_surplus_lock: asyncio.Lock = asyncio.Lock()
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -309,12 +338,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "calendar_result": None,
         })
         log.info("Tool: set_overnight_mode → enabled=%s  reason=%s", enabled, reason)
-
-        push_result = await _apply_overnight_decision(
-            enabled,
-            reasoning=f"Manual override: {reason}",
-        )
-
+        try:
+            push_result = await _apply_overnight_decision(
+                enabled,
+                reasoning=f"Manual override: {reason}",
+            )
+        except Exception as exc:
+            log.exception("set_overnight_mode push failed")
+            push_result = None
         return [TextContent(type="text", text=json.dumps({
             "status":       "ok" if push_result else "push_failed",
             "enabled":      enabled,
@@ -324,15 +355,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         }, indent=2))]
 
     if name == "get_surplus_status":
-        peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
-        payload = dict(_surplus_state)
-        payload["peak_window"] = f"{peak['start_h']:02d}:00–{peak['end_h']:02d}:00 weekdays"
-        payload["thresholds"] = {
-            "battery_full_soc":  surplus_monitor.BATTERY_FULL_SOC,
-            "battery_low_soc":   surplus_monitor.BATTERY_LOW_SOC,
-            "surplus_min_w":     surplus_monitor.SURPLUS_MIN_W,
-            "activation_polls":  surplus_monitor.ACTIVATION_POLLS,
-        }
+        try:
+            peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
+            payload = dict(_surplus_state)
+            payload["peak_window"] = f"{peak['start_h']:02d}:00–{peak['end_h']:02d}:00 weekdays"
+            payload["thresholds"] = {
+                "battery_full_soc":  surplus_monitor.BATTERY_FULL_SOC,
+                "battery_low_soc":   surplus_monitor.BATTERY_LOW_SOC,
+                "surplus_min_w":     surplus_monitor.SURPLUS_MIN_W,
+                "activation_polls":  surplus_monitor.ACTIVATION_POLLS,
+            }
+        except Exception as exc:
+            log.exception("get_surplus_status failed")
+            payload = {"status": "error", "error": str(exc)}
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
     if name == "get_weekly_report":
@@ -348,7 +383,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "run_calendar_check":
         log.info("Tool: run_calendar_check triggered manually")
-        await _nightly_calendar_check()
+        try:
+            await _nightly_calendar_check()
+        except Exception as exc:
+            log.exception("run_calendar_check failed")
+            return [TextContent(type="text", text=json.dumps(
+                {"status": "error", "error": str(exc), "timestamp": datetime.now(ARIZONA).isoformat()}
+            ))]
         return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
 
     if name == "switch_battery_mode":
@@ -359,7 +400,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 {"status": "error", "error": f"invalid mode: {mode!r}"}
             ))]
         log.info("Tool: switch_battery_mode(mode=%s) triggered manually", mode)
-        _last_mode_switch = await battery_mode.switch_to(mode, label="manual")
+        try:
+            _last_mode_switch = await battery_mode.switch_to(mode, label="manual")
+        except Exception as exc:
+            log.exception("switch_battery_mode failed")
+            _last_mode_switch = {"status": "error", "error": str(exc), "timestamp": datetime.now(ARIZONA).isoformat()}
         return [TextContent(type="text", text=json.dumps(_last_mode_switch, indent=2))]
 
     if name == "get_battery_mode_status":
@@ -390,24 +435,31 @@ async def _scheduled_run():
         except Exception:
             log.exception("[scheduler] Daily run failed")
     else:
-        # No long trip tomorrow — surplus monitor is the primary charging mode.
-        # Clear the JuiceBox schedule entirely so the car only charges when the
-        # surplus monitor activates it (battery full + solar exceeds consumption).
-        log.info("[scheduler] Overnight disabled — clearing schedule (surplus monitor primary)")
+        # No long trip tomorrow — push daytime-only window so the car charges
+        # only during the cheapest rate period (super off-peak) and the surplus
+        # monitor can still override. An empty schedule [] would leave the
+        # JuiceBox in its hardware default (charge freely), which is wrong.
+        log.info("[scheduler] Overnight disabled — pushing daytime-only schedule (surplus monitor primary)")
         try:
-            jb_resp = await juicebox_mcp.set_charging_schedule([])
+            try:
+                tariff = await enphase_mcp.get_tariff()
+            except Exception:
+                tariff = _cached_tariff
+            schedule, sched_reasoning = optimizer.compute_schedule(tariff, overnight_enabled=False)
+            jb_resp = await juicebox_mcp.set_charging_schedule(schedule)
+            now_iso = datetime.now(ARIZONA).isoformat()
             _last_result = {
-                "started_at":        datetime.now(ARIZONA).isoformat(),
+                "started_at":        now_iso,
                 "status":            "ok",
-                "schedule":          [],
-                "reasoning":         f"Overnight TOU disabled ({reason}) — surplus solar is primary charging mode.",
+                "schedule":          schedule,
+                "reasoning":         f"Overnight TOU disabled ({reason}) — {sched_reasoning}",
                 "juicebox_ok":       True,
                 "juicebox_response": jb_resp,
                 "errors":            [],
-                "finished_at":       datetime.now(ARIZONA).isoformat(),
+                "finished_at":       now_iso,
             }
         except Exception as exc:
-            log.error("[scheduler] Failed to clear JuiceBox schedule: %s", exc)
+            log.error("[scheduler] Failed to push daytime schedule: %s", exc)
 
     # Reset overnight mode — default is surplus-only until tonight's calendar check
     _overnight_charging = {
@@ -637,14 +689,22 @@ async def _apply_overnight_decision(enabled: bool, reasoning: str) -> dict | Non
             _last_result = await coordinator.run()
             log.info("[overnight] JuiceBox programmed — status: %s", _last_result.get("status"))
         else:
-            log.info("[overnight] Clearing JuiceBox schedule (surplus-only) — %s", reasoning)
-            jb_resp = await juicebox_mcp.set_charging_schedule([])
+            # Push daytime-only window rather than [] — an empty schedule leaves
+            # the JuiceBox in its hardware default (charge freely), which defeats
+            # the intent of surplus-only mode.
+            log.info("[overnight] Pushing daytime-only schedule (surplus-only) — %s", reasoning)
+            try:
+                tariff = await enphase_mcp.get_tariff()
+            except Exception:
+                tariff = _cached_tariff
+            schedule, sched_reasoning = optimizer.compute_schedule(tariff, overnight_enabled=False)
+            jb_resp = await juicebox_mcp.set_charging_schedule(schedule)
             now_iso = datetime.now(ARIZONA).isoformat()
             _last_result = {
                 "started_at":        now_iso,
                 "status":            "ok",
-                "schedule":          [],
-                "reasoning":         reasoning,
+                "schedule":          schedule,
+                "reasoning":         f"{reasoning} — {sched_reasoning}",
                 "juicebox_ok":       True,
                 "juicebox_response": jb_resp,
                 "errors":            [],
@@ -756,69 +816,76 @@ async def _surplus_monitor_run() -> None:
     Activates JuiceBox when battery is full and solar exceeds consumption.
     Reverts to TOU schedule when surplus ends.
     Skips the peak pricing window entirely — car never charges during peak.
+
+    The _surplus_lock prevents concurrent execution if a tool call and the
+    scheduler job overlap, which would cause interleaved _surplus_state writes.
     """
     global _surplus_state
-    now = datetime.now(ARIZONA)
-
-    # Only run during daylight hours (06:00–20:00 Arizona)
-    if now.hour < 6 or now.hour >= 20:
+    if _surplus_lock.locked():
+        log.debug("[surplus_monitor] Skipping — previous poll still running")
         return
+    async with _surplus_lock:
+        now = datetime.now(ARIZONA)
 
-    # Determine peak window from cached tariff (fallback to APS default)
-    peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
-    if surplus_monitor.is_peak_time(now.hour, now.minute, peak["start_h"], peak["end_h"]):
-        log.debug("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
-                  peak["start_h"], peak["end_h"])
-        # Safety: if we somehow entered surplus mode and peak just started, revert
-        if _surplus_state["mode"] == "surplus_override":
-            log.warning("[surplus_monitor] Peak started while surplus override active — reverting")
-            await _revert_to_tou_schedule()
-        return
+        # Only run during daylight hours (06:00–20:00 Arizona)
+        if now.hour < 6 or now.hour >= 20:
+            return
 
-    # Fetch current energy state
-    try:
-        summary = await enphase_mcp.get_energy_summary()
-    except Exception as exc:
-        log.warning("[surplus_monitor] Could not fetch energy summary: %s", exc)
-        return
+        # Determine peak window from cached tariff (fallback to APS default)
+        peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
+        if surplus_monitor.is_peak_time(now.hour, now.minute, peak["start_h"], peak["end_h"]):
+            log.debug("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
+                      peak["start_h"], peak["end_h"])
+            # Safety: if we somehow entered surplus mode and peak just started, revert
+            if _surplus_state["mode"] == "surplus_override":
+                log.warning("[surplus_monitor] Peak started while surplus override active — reverting")
+                await _revert_to_tou_schedule()
+            return
 
-    values   = surplus_monitor.extract_current_values(summary)
-    soc      = values["battery_soc"]
-    prod     = values["production_w"]
-    cons     = values["consumption_w"]
-    surplus_w = max(0, prod - cons)
+        # Fetch current energy state
+        try:
+            summary = await enphase_mcp.get_energy_summary()
+        except Exception as exc:
+            log.warning("[surplus_monitor] Could not fetch energy summary: %s", exc)
+            return
 
-    _surplus_state.update({
-        "battery_soc":   soc,
-        "production_w":  prod,
-        "consumption_w": cons,
-        "surplus_w":     surplus_w,
-        "last_checked":  now.isoformat(),
-    })
+        values   = surplus_monitor.extract_current_values(summary)
+        soc      = values["battery_soc"]
+        prod     = values["production_w"]
+        cons     = values["consumption_w"]
+        surplus_w = max(0, prod - cons)
 
-    if surplus_monitor.is_surplus(values):
-        _surplus_state["surplus_poll_count"]    += 1
-        _surplus_state["no_surplus_poll_count"]  = 0
+        _surplus_state.update({
+            "battery_soc":   soc,
+            "production_w":  prod,
+            "consumption_w": cons,
+            "surplus_w":     surplus_w,
+            "last_checked":  now.isoformat(),
+        })
 
-        if _surplus_state["surplus_poll_count"] >= surplus_monitor.ACTIVATION_POLLS:
-            amps = surplus_monitor.compute_charge_amps(surplus_w)
-            # Activate on first trigger, or update amps if production changed
-            if (_surplus_state["mode"] == "tou_schedule" or
-                    amps != _surplus_state.get("charge_amps")):
-                await _activate_surplus_charging(amps, now)
+        if surplus_monitor.is_surplus(values):
+            _surplus_state["surplus_poll_count"]    += 1
+            _surplus_state["no_surplus_poll_count"]  = 0
 
-    elif surplus_monitor.is_no_longer_surplus(values):
-        _surplus_state["no_surplus_poll_count"] += 1
-        _surplus_state["surplus_poll_count"]     = 0
+            if _surplus_state["surplus_poll_count"] >= surplus_monitor.ACTIVATION_POLLS:
+                amps = surplus_monitor.compute_charge_amps(surplus_w)
+                # Activate on first trigger, or update amps if production changed
+                if (_surplus_state["mode"] == "tou_schedule" or
+                        amps != _surplus_state.get("charge_amps")):
+                    await _activate_surplus_charging(amps, now)
 
-        if (_surplus_state["mode"] == "surplus_override" and
-                _surplus_state["no_surplus_poll_count"] >= surplus_monitor.DEACTIVATION_POLLS):
-            await _revert_to_tou_schedule()
+        elif surplus_monitor.is_no_longer_surplus(values):
+            _surplus_state["no_surplus_poll_count"] += 1
+            _surplus_state["surplus_poll_count"]     = 0
 
-    log.info(
-        "[surplus_monitor] SOC=%s%%  prod=%dW  cons=%dW  surplus=%dW  mode=%s",
-        soc, prod, cons, surplus_w, _surplus_state["mode"],
-    )
+            if (_surplus_state["mode"] == "surplus_override" and
+                    _surplus_state["no_surplus_poll_count"] >= surplus_monitor.DEACTIVATION_POLLS):
+                await _revert_to_tou_schedule()
+
+        log.info(
+            "[surplus_monitor] SOC=%s%%  prod=%dW  cons=%dW  surplus=%dW  mode=%s",
+            soc, prod, cons, surplus_w, _surplus_state["mode"],
+        )
 
 
 def _build_scheduler() -> AsyncIOScheduler:
@@ -877,6 +944,7 @@ def _build_scheduler() -> AsyncIOScheduler:
 
 async def _run_stdio():
     global _scheduler
+    _initialize_state()
     scheduler = _build_scheduler()
     _scheduler = scheduler
     scheduler.start()
@@ -926,6 +994,7 @@ def _run_sse(host: str, port: int):
     @asynccontextmanager
     async def lifespan(starlette_app):
         global _scheduler
+        _initialize_state()
         scheduler = _build_scheduler()
         _scheduler = scheduler
         scheduler.start()
