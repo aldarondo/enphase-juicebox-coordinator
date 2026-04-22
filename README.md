@@ -49,10 +49,10 @@ Summer has no super off-peak period — optimizer falls back to full 10:00–16:
 
 | Time | Job |
 |---|---|
-| 04:00 daily (Arizona) | Full coordinator run — fetch tariff, compute schedule, program JuiceBox, reschedule mode-switch jobs against live peak window. Resets overnight flag to disabled (surplus-only). |
+| 21:00 daily (Arizona) | Calendar check — reads Google Calendar iCal feeds, geocodes next-day events. If driving distance > threshold, enables overnight TOU **and immediately pushes the TOU schedule to JuiceBox** so the car can start charging at plug-in time. If no trip, immediately clears the schedule to `[]` (surplus-only). |
+| 04:00 daily (Arizona) | Safety-net / idempotent re-push of whatever the 21:00 check decided. Also refreshes cached tariff and reschedules the mode-switch jobs against the live peak window. Resets overnight flag. |
 | 15:57 **weekdays** (Arizona, tariff-derived) | Pre-peak battery mode switch: Savings → Self-Consumption (solar covers load during the peak instead of being exported at low rate) |
 | 19:02 **weekdays** (Arizona, tariff-derived) | Post-peak battery mode switch: Self-Consumption → Savings (restore TOU-aware discharge for the evening) |
-| 21:00 daily (Arizona) | Calendar check — reads Google Calendar iCal feeds, geocodes next-day events, enables overnight TOU if driving distance > 50 miles |
 | Every 15 min | Surplus monitor — activates/deactivates JuiceBox based on SOC + solar surplus |
 
 ## Deployment
