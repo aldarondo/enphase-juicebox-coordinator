@@ -39,8 +39,10 @@ Summer has no super off-peak period — optimizer falls back to full 10:00–16:
 
 - `run_coordinator` — trigger an immediate tariff fetch + JuiceBox schedule update
 - `get_status` — current state: schedule, overnight flag, calendar result, last run time
+- `get_overnight_mode` / `set_overnight_mode` — inspect or manually flip the overnight TOU flag. `set_overnight_mode` pushes to the JuiceBox immediately (TOU schedule or clear) — same path the 21:00 calendar check uses
 - `get_surplus_status` — surplus monitor state: SOC, production, consumption, active/inactive
 - `charge_now` — push an immediate charging window (optional `hours` param; reverts at next 04:00 run)
+- `run_calendar_check` — trigger the 21:00 calendar check on demand (also pushes to JuiceBox)
 - `get_weekly_report` — last Sunday's charging report
 - `switch_battery_mode` — manually switch Enphase battery profile (`self-consumption` or `savings`); same path the scheduler uses at 15:57 / 19:02
 - `get_battery_mode_status` — result of the most recent battery-mode switch (target, applied, attempts, errors)

@@ -141,7 +141,9 @@ TOOLS = [
             "Manually override tonight's charging mode. "
             "Pass enable=true to force TOU overnight charging (e.g. you know "
             "tomorrow will be a long drive), or enable=false to skip overnight "
-            "charging (surplus solar only). Resets to default after the 04:00 run."
+            "charging (surplus solar only). The schedule is pushed to the "
+            "JuiceBox immediately so charging can start/stop right away. "
+            "Flag resets to disabled (surplus-only) after the next 04:00 run."
         ),
         inputSchema={
             "type": "object",
@@ -307,11 +309,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             "calendar_result": None,
         })
         log.info("Tool: set_overnight_mode → enabled=%s  reason=%s", enabled, reason)
+
+        push_result = await _apply_overnight_decision(
+            enabled,
+            reasoning=f"Manual override: {reason}",
+        )
+
         return [TextContent(type="text", text=json.dumps({
-            "status":  "ok",
-            "enabled": enabled,
-            "reason":  reason,
-            "note":    "Resets to default (enabled=True) after the 04:00 coordinator run.",
+            "status":       "ok" if push_result else "push_failed",
+            "enabled":      enabled,
+            "reason":       reason,
+            "juicebox_ok":  bool(push_result and push_result.get("juicebox_ok")),
+            "note":         "Flag resets to disabled (surplus-only) after the next 04:00 coordinator run.",
         }, indent=2))]
 
     if name == "get_surplus_status":
@@ -606,6 +615,50 @@ async def _scheduled_post_peak_mode_switch() -> None:
     _last_mode_switch = await battery_mode.switch_to_savings()
 
 
+async def _apply_overnight_decision(enabled: bool, reasoning: str) -> dict | None:
+    """
+    Push the overnight-charging decision to the JuiceBox right now.
+
+    Shared by `_nightly_calendar_check` (21:00 scheduler) and the
+    `set_overnight_mode` MCP tool so both paths have the same "decide →
+    immediately program JuiceBox" behavior. The 04:00 daily run is the
+    safety-net / idempotent retry.
+
+      enabled=True  → coordinator.run()                          (push TOU)
+      enabled=False → juicebox_mcp.set_charging_schedule([])     (clear)
+
+    Returns the updated _last_result dict on success, or None on push
+    failure (caller logs; 04:00 run retries).
+    """
+    global _last_result
+    try:
+        if enabled:
+            log.info("[overnight] Pushing TOU schedule to JuiceBox — %s", reasoning)
+            _last_result = await coordinator.run()
+            log.info("[overnight] JuiceBox programmed — status: %s", _last_result.get("status"))
+        else:
+            log.info("[overnight] Clearing JuiceBox schedule (surplus-only) — %s", reasoning)
+            jb_resp = await juicebox_mcp.set_charging_schedule([])
+            now_iso = datetime.now(ARIZONA).isoformat()
+            _last_result = {
+                "started_at":        now_iso,
+                "status":            "ok",
+                "schedule":          [],
+                "reasoning":         reasoning,
+                "juicebox_ok":       True,
+                "juicebox_response": jb_resp,
+                "errors":            [],
+                "finished_at":       now_iso,
+            }
+        return _last_result
+    except Exception as exc:
+        log.error(
+            "[overnight] Failed to update JuiceBox: %s  (04:00 safety-net run will retry)",
+            exc,
+        )
+        return None
+
+
 async def _nightly_calendar_check() -> None:
     """
     Runs at 21:00 Arizona. Fetches tomorrow's calendar events, estimates total
@@ -621,7 +674,7 @@ async def _nightly_calendar_check() -> None:
     The 04:00 daily run re-asserts whichever schedule the flag calls for, so a
     21:00 push failure is self-healing. No iCal URLs configured → stay disabled.
     """
-    global _overnight_charging, _last_result
+    global _overnight_charging
     ical_urls = [u.strip() for u in os.getenv("GOOGLE_ICAL_URLS", "").split(",") if u.strip()]
 
     if not ical_urls:
@@ -644,32 +697,10 @@ async def _nightly_calendar_check() -> None:
     }
     log.info("[calendar_check] %s", result["reasoning"])
 
-    # Push the decision to the JuiceBox right now. Overnight charging needs to
-    # start by ~22:00 to actually fill the battery before morning; the 04:00
-    # run is only a safety-net / idempotent re-push.
-    try:
-        if enabled:
-            log.info("[calendar_check] Long trip detected — pushing TOU schedule to JuiceBox now")
-            _last_result = await coordinator.run()
-            log.info("[calendar_check] JuiceBox programmed — status: %s", _last_result.get("status"))
-        else:
-            log.info("[calendar_check] No long trip — clearing JuiceBox schedule (surplus-only)")
-            jb_resp = await juicebox_mcp.set_charging_schedule([])
-            _last_result = {
-                "started_at":        datetime.now(ARIZONA).isoformat(),
-                "status":            "ok",
-                "schedule":          [],
-                "reasoning":         f"21:00 calendar check: {result['reasoning']} — cleared JuiceBox.",
-                "juicebox_ok":       True,
-                "juicebox_response": jb_resp,
-                "errors":            [],
-                "finished_at":       datetime.now(ARIZONA).isoformat(),
-            }
-    except Exception as exc:
-        log.error(
-            "[calendar_check] Failed to update JuiceBox after calendar check: %s  "
-            "(04:00 safety-net run will retry)", exc,
-        )
+    await _apply_overnight_decision(
+        enabled,
+        reasoning=f"21:00 calendar check: {result['reasoning']}",
+    )
 
 
 async def _activate_surplus_charging(amps: int, now: datetime) -> None:
