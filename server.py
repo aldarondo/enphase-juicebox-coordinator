@@ -35,6 +35,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+import battery_mode
 import calendar_check
 import coordinator
 import enphase_mcp
@@ -56,6 +57,7 @@ app = Server("enphase-juicebox-coordinator")
 _last_result:   dict | None = None
 _last_report:   dict | None = None
 _cached_tariff: dict        = {}   # updated each daily coordinator run
+_last_mode_switch: dict | None = None   # most recent battery-mode switch result
 _overnight_charging: dict   = {
     "enabled":         False,
     "reason":          "default — surplus solar only until 21:00 calendar check",
@@ -181,6 +183,37 @@ TOOLS = [
         ),
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
+    Tool(
+        name="switch_battery_mode",
+        description=(
+            "Manually switch the Enphase battery profile. Normally handled by "
+            "the scheduler: Savings → Self-Consumption at 15:57 Arizona (before "
+            "the 16:00 peak), Self-Consumption → Savings at 19:02 (after 19:00 "
+            "peak). Use this tool for on-demand switches, retries after a "
+            "scheduled failure, or manual testing."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type":        "string",
+                    "enum":        ["self-consumption", "savings"],
+                    "description": "Target Enphase battery profile.",
+                },
+            },
+            "required": ["mode"],
+        },
+    ),
+    Tool(
+        name="get_battery_mode_status",
+        description=(
+            "Return the result of the most recent battery-mode switch (scheduled "
+            "or manual): target mode, applied mode, status (ok/skipped/error), "
+            "attempts, and any errors. Useful for verifying the 15:57 / 19:02 "
+            "scheduled switches ran cleanly."
+        ),
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
 ]
 
 # ── Tool handlers ─────────────────────────────────────────────────────────────
@@ -300,6 +333,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         log.info("Tool: run_calendar_check triggered manually")
         await _nightly_calendar_check()
         return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
+
+    if name == "switch_battery_mode":
+        global _last_mode_switch
+        mode = arguments.get("mode")
+        if mode not in (battery_mode.MODE_SELF_CONSUMPTION, battery_mode.MODE_SAVINGS):
+            return [TextContent(type="text", text=json.dumps(
+                {"status": "error", "error": f"invalid mode: {mode!r}"}
+            ))]
+        log.info("Tool: switch_battery_mode(mode=%s) triggered manually", mode)
+        _last_mode_switch = await battery_mode.switch_to(mode, label="manual")
+        return [TextContent(type="text", text=json.dumps(_last_mode_switch, indent=2))]
+
+    if name == "get_battery_mode_status":
+        if _last_mode_switch is None:
+            payload = {
+                "status":  "never_run",
+                "message": "No battery-mode switch has occurred this session. "
+                           "Scheduled switches run at 15:57 and 19:02 Arizona.",
+            }
+        else:
+            payload = _last_mode_switch
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
     return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
@@ -449,6 +504,20 @@ async def _scheduled_weekly_report():
     v = report["schedule_verification"]
     log.info("  Verification: [%s] %s", v["status"], v.get("message", v.get("error", "")))
     log.info("=" * 60)
+
+
+async def _scheduled_pre_peak_mode_switch() -> None:
+    """15:57 Arizona: Savings → Self-Consumption before the 16:00 peak."""
+    global _last_mode_switch
+    log.info("[scheduler] Pre-peak battery mode switch (15:57 Arizona)")
+    _last_mode_switch = await battery_mode.switch_to_self_consumption()
+
+
+async def _scheduled_post_peak_mode_switch() -> None:
+    """19:02 Arizona: Self-Consumption → Savings after the 19:00 peak."""
+    global _last_mode_switch
+    log.info("[scheduler] Post-peak battery mode switch (19:02 Arizona)")
+    _last_mode_switch = await battery_mode.switch_to_savings()
 
 
 async def _nightly_calendar_check() -> None:
@@ -629,6 +698,20 @@ def _build_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="calendar_check",
     )
+    scheduler.add_job(
+        _scheduled_pre_peak_mode_switch,
+        "cron",
+        hour=15,
+        minute=57,
+        id="battery_mode_pre_peak",
+    )
+    scheduler.add_job(
+        _scheduled_post_peak_mode_switch,
+        "cron",
+        hour=19,
+        minute=2,
+        id="battery_mode_post_peak",
+    )
     return scheduler
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -636,15 +719,19 @@ def _build_scheduler() -> AsyncIOScheduler:
 async def _run_stdio():
     scheduler = _build_scheduler()
     scheduler.start()
-    next_daily    = scheduler.get_job("daily_coordinator").next_run_time
-    next_report   = scheduler.get_job("weekly_report").next_run_time
-    next_surplus  = scheduler.get_job("surplus_monitor").next_run_time
-    next_calendar = scheduler.get_job("calendar_check").next_run_time
+    next_daily      = scheduler.get_job("daily_coordinator").next_run_time
+    next_report     = scheduler.get_job("weekly_report").next_run_time
+    next_surplus    = scheduler.get_job("surplus_monitor").next_run_time
+    next_calendar   = scheduler.get_job("calendar_check").next_run_time
+    next_pre_peak   = scheduler.get_job("battery_mode_pre_peak").next_run_time
+    next_post_peak  = scheduler.get_job("battery_mode_post_peak").next_run_time
     log.info("Coordinator MCP server starting (stdio)")
     log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
     log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
     log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
     log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
+    log.info("  Pre-peak switch:  next run at %s (America/Phoenix)", next_pre_peak)
+    log.info("  Post-peak switch: next run at %s (America/Phoenix)", next_post_peak)
     log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
@@ -679,15 +766,19 @@ def _run_sse(host: str, port: int):
     async def lifespan(starlette_app):
         scheduler = _build_scheduler()
         scheduler.start()
-        next_daily    = scheduler.get_job("daily_coordinator").next_run_time
-        next_report   = scheduler.get_job("weekly_report").next_run_time
-        next_surplus  = scheduler.get_job("surplus_monitor").next_run_time
-        next_calendar = scheduler.get_job("calendar_check").next_run_time
+        next_daily      = scheduler.get_job("daily_coordinator").next_run_time
+        next_report     = scheduler.get_job("weekly_report").next_run_time
+        next_surplus    = scheduler.get_job("surplus_monitor").next_run_time
+        next_calendar   = scheduler.get_job("calendar_check").next_run_time
+        next_pre_peak   = scheduler.get_job("battery_mode_pre_peak").next_run_time
+        next_post_peak  = scheduler.get_job("battery_mode_post_peak").next_run_time
         log.info("Coordinator MCP server starting (SSE) on %s:%d", host, port)
         log.info("  Daily scheduler:  next run at %s (America/Phoenix)", next_daily)
         log.info("  Weekly report:    next run at %s (America/Phoenix)", next_report)
         log.info("  Surplus monitor:  next run at %s (America/Phoenix)", next_surplus)
         log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
+        log.info("  Pre-peak switch:  next run at %s (America/Phoenix)", next_pre_peak)
+        log.info("  Post-peak switch: next run at %s (America/Phoenix)", next_post_peak)
         log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
         yield
         scheduler.shutdown()
