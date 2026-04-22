@@ -58,6 +58,12 @@ _last_result:   dict | None = None
 _last_report:   dict | None = None
 _cached_tariff: dict        = {}   # updated each daily coordinator run
 _last_mode_switch: dict | None = None   # most recent battery-mode switch result
+_scheduler:     "AsyncIOScheduler | None" = None  # exposed so tariff refresh can reschedule mode-switch jobs
+
+# Minutes before peak_start (pre-peak switch) and after peak_end (post-peak
+# switch). Tight buffers — large buffers waste off-peak / post-peak time.
+PRE_PEAK_BUFFER_MIN  = 3
+POST_PEAK_BUFFER_MIN = 2
 _overnight_charging: dict   = {
     "enabled":         False,
     "reason":          "default — surplus solar only until 21:00 calendar check",
@@ -400,9 +406,10 @@ async def _scheduled_run():
         "calendar_result": None,
     }
 
-    # Refresh cached tariff so surplus monitor has current peak hours
+    # Refresh cached tariff so surplus monitor + mode-switch jobs have current peak hours
     try:
         _cached_tariff = await enphase_mcp.get_tariff()
+        _reschedule_battery_mode_jobs()
     except Exception:
         log.warning("[scheduler] Could not refresh cached tariff after coordinator run")
 
@@ -506,17 +513,94 @@ async def _scheduled_weekly_report():
     log.info("=" * 60)
 
 
+def _peak_switch_times(tariff: dict) -> dict:
+    """
+    Derive pre-peak and post-peak mode-switch times from the tariff's peak window.
+
+    Returns {
+        "pre_h": int, "pre_m": int,      # PRE_PEAK_BUFFER_MIN before peak_start
+        "post_h": int, "post_m": int,    # POST_PEAK_BUFFER_MIN after peak_end
+        "peak": {...},                   # the peak dict from optimizer
+        "source": "tariff" | "default",
+    }
+
+    Falls back to APS default (16:00–19:00) if the tariff can't be parsed —
+    APS peak has been stable for years, so this is a safe fallback.
+    """
+    peak   = optimizer._find_peak_weekday_hours(tariff)
+    source = "tariff" if peak else "default"
+    if not peak:
+        peak = optimizer.APS_DEFAULT_PEAK
+
+    pre_h = peak["start_h"] - 1
+    pre_m = 60 - PRE_PEAK_BUFFER_MIN
+    post_h = peak["end_h"]
+    post_m = POST_PEAK_BUFFER_MIN
+    return {"pre_h": pre_h, "pre_m": pre_m,
+            "post_h": post_h, "post_m": post_m,
+            "peak": peak, "source": source}
+
+
+def _reschedule_battery_mode_jobs() -> None:
+    """Reschedule the pre/post-peak jobs using the current cached tariff."""
+    if _scheduler is None:
+        return
+    times = _peak_switch_times(_cached_tariff)
+    try:
+        _scheduler.reschedule_job(
+            "battery_mode_pre_peak",
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=times["pre_h"],
+            minute=times["pre_m"],
+            timezone=ARIZONA,
+        )
+        _scheduler.reschedule_job(
+            "battery_mode_post_peak",
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=times["post_h"],
+            minute=times["post_m"],
+            timezone=ARIZONA,
+        )
+        peak = times["peak"]
+        log.info(
+            "[scheduler] Battery-mode jobs rescheduled from %s: pre=%02d:%02d  post=%02d:%02d  (peak %02d:00–%02d:00 weekdays)",
+            times["source"], times["pre_h"], times["pre_m"],
+            times["post_h"], times["post_m"],
+            peak["start_h"], peak["end_h"],
+        )
+    except Exception as exc:
+        log.warning("[scheduler] Could not reschedule battery-mode jobs: %s", exc)
+
+
 async def _scheduled_pre_peak_mode_switch() -> None:
-    """15:57 Arizona: Savings → Self-Consumption before the 16:00 peak."""
+    """Weekday pre-peak: Savings → Self-Consumption."""
     global _last_mode_switch
-    log.info("[scheduler] Pre-peak battery mode switch (15:57 Arizona)")
+    peak = optimizer._find_peak_weekday_hours(_cached_tariff)
+    if peak is None:
+        log.info("[scheduler] Pre-peak mode switch skipped — tariff has no weekday peak window")
+        _last_mode_switch = {
+            "status":  "skipped_no_peak",
+            "message": "Cached tariff has no weekday peak window; no switch needed today.",
+        }
+        return
+    log.info("[scheduler] Pre-peak battery mode switch (peak starts %02d:00)", peak["start_h"])
     _last_mode_switch = await battery_mode.switch_to_self_consumption()
 
 
 async def _scheduled_post_peak_mode_switch() -> None:
-    """19:02 Arizona: Self-Consumption → Savings after the 19:00 peak."""
+    """Weekday post-peak: Self-Consumption → Savings."""
     global _last_mode_switch
-    log.info("[scheduler] Post-peak battery mode switch (19:02 Arizona)")
+    peak = optimizer._find_peak_weekday_hours(_cached_tariff)
+    if peak is None:
+        log.info("[scheduler] Post-peak mode switch skipped — tariff has no weekday peak window")
+        _last_mode_switch = {
+            "status":  "skipped_no_peak",
+            "message": "Cached tariff has no weekday peak window; no switch needed today.",
+        }
+        return
+    log.info("[scheduler] Post-peak battery mode switch (peak ended %02d:00)", peak["end_h"])
     _last_mode_switch = await battery_mode.switch_to_savings()
 
 
@@ -698,18 +782,24 @@ def _build_scheduler() -> AsyncIOScheduler:
         minute=0,
         id="calendar_check",
     )
+    # Mode-switch jobs: weekdays only (APS peak is weekday-only).
+    # Times seeded from APS default (16:00–19:00 → 15:57 / 19:02); reschedule
+    # happens after every tariff refresh using the actual peak window.
+    initial = _peak_switch_times({})
     scheduler.add_job(
         _scheduled_pre_peak_mode_switch,
         "cron",
-        hour=15,
-        minute=57,
+        day_of_week="mon-fri",
+        hour=initial["pre_h"],
+        minute=initial["pre_m"],
         id="battery_mode_pre_peak",
     )
     scheduler.add_job(
         _scheduled_post_peak_mode_switch,
         "cron",
-        hour=19,
-        minute=2,
+        day_of_week="mon-fri",
+        hour=initial["post_h"],
+        minute=initial["post_m"],
         id="battery_mode_post_peak",
     )
     return scheduler
@@ -717,7 +807,9 @@ def _build_scheduler() -> AsyncIOScheduler:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def _run_stdio():
+    global _scheduler
     scheduler = _build_scheduler()
+    _scheduler = scheduler
     scheduler.start()
     next_daily      = scheduler.get_job("daily_coordinator").next_run_time
     next_report     = scheduler.get_job("weekly_report").next_run_time
@@ -764,7 +856,9 @@ def _run_sse(host: str, port: int):
 
     @asynccontextmanager
     async def lifespan(starlette_app):
+        global _scheduler
         scheduler = _build_scheduler()
+        _scheduler = scheduler
         scheduler.start()
         next_daily      = scheduler.get_job("daily_coordinator").next_run_time
         next_report     = scheduler.get_job("weekly_report").next_run_time
