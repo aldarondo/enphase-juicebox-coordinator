@@ -495,6 +495,18 @@ async def _scheduled_run():
     except Exception:
         log.warning("[scheduler] Could not refresh cached tariff after coordinator run")
 
+    # Fallback: if the 19:02 post-peak switch was missed (e.g. container restarted
+    # mid-evening), the battery may still be in Self-Consumption at 04:00. Switch
+    # back to Savings so TOU optimization is active for the day.
+    try:
+        result = await battery_mode.switch_to(battery_mode.MODE_SAVINGS, label="04:00 post-peak fallback")
+        if result["status"] == "ok":
+            log.info("[scheduler] 04:00 fallback: battery was still in Self-Consumption — switched to Savings")
+        elif result["status"] == "skipped_already_target":
+            log.info("[scheduler] 04:00 fallback: battery already in Savings — no action needed")
+    except Exception as exc:
+        log.warning("[scheduler] 04:00 fallback mode check failed: %s", exc)
+
 
 async def _verify_schedule_against_tariff() -> dict:
     """
