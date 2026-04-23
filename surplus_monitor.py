@@ -44,15 +44,23 @@ def extract_current_values(summary: dict) -> dict:
         stats      = summary["today_stats"]["stats"][0]
         battery_soc = summary["today_stats"]["battery_details"]["aggregate_soc"]
 
-        def _last_nonnull(arr) -> int:
-            vals = [x for x in arr if x is not None]
-            return int(vals[-1]) if vals else 0
+        # Future intervals are pre-filled with 0 (not None), so _last_nonnull would
+        # return trailing zeros. Use the SOC array (which uses None for future slots)
+        # to find the last completed interval, then index all arrays at that position.
+        soc_arr  = stats.get("soc", [])
+        last_idx = next((i for i in range(len(soc_arr) - 1, -1, -1) if soc_arr[i] is not None), None)
+
+        def _at(arr) -> int:
+            if last_idx is None or last_idx >= len(arr):
+                return 0
+            val = arr[last_idx]
+            return int(val) if val is not None else 0
 
         return {
             "battery_soc":   battery_soc,
-            "production_w":  _last_nonnull(stats.get("production",  [])),
-            "consumption_w": _last_nonnull(stats.get("consumption", [])),
-            "solar_grid_w":  _last_nonnull(stats.get("solar_grid",  [])),
+            "production_w":  _at(stats.get("production",  [])),
+            "consumption_w": _at(stats.get("consumption", [])),
+            "solar_grid_w":  _at(stats.get("solar_grid",  [])),
         }
     except (KeyError, IndexError, TypeError) as exc:
         log.warning("[surplus_monitor] Failed to extract values from summary: %s", exc)

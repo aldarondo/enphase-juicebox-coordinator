@@ -23,6 +23,7 @@ ARIZONA = pytz.timezone("America/Phoenix")
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 def _make_summary(soc: int, prod: int, cons: int) -> dict:
+    # soc array: one completed interval (non-None) so last_idx=0; future slots use None
     return {
         "today_stats": {
             "battery_details": {"aggregate_soc": soc},
@@ -30,6 +31,7 @@ def _make_summary(soc: int, prod: int, cons: int) -> dict:
                 "production":  [prod],
                 "consumption": [cons],
                 "solar_grid":  [0],
+                "soc":         [soc],
             }],
         }
     }
