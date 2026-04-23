@@ -41,14 +41,21 @@ def extract_current_values(summary: dict) -> dict:
       solar_grid_w     int          — solar currently exported to grid, watts
     """
     try:
-        stats      = summary["today_stats"]["stats"][0]
-        battery_soc = summary["today_stats"]["battery_details"]["aggregate_soc"]
+        # Prefer the pre-resolved "current" block added by enphase-mcp >= 2026-04-23.
+        # Fall back to parsing today_stats directly for older MCP deployments.
+        if "current" in summary and summary["current"].get("production_w") is not None:
+            c = summary["current"]
+            return {
+                "battery_soc":   c.get("battery_soc"),
+                "production_w":  int(c["production_w"]),
+                "consumption_w": int(c.get("consumption_w") or 0),
+                "solar_grid_w":  int(c.get("solar_grid_w") or 0),
+            }
 
-        # Future intervals are pre-filled with 0 (not None), so _last_nonnull would
-        # return trailing zeros. Use the SOC array (which uses None for future slots)
-        # to find the last completed interval, then index all arrays at that position.
-        soc_arr  = stats.get("soc", [])
-        last_idx = next((i for i in range(len(soc_arr) - 1, -1, -1) if soc_arr[i] is not None), None)
+        stats       = summary["today_stats"]["stats"][0]
+        battery_soc = summary["today_stats"]["battery_details"]["aggregate_soc"]
+        soc_arr     = stats.get("soc", [])
+        last_idx    = next((i for i in range(len(soc_arr) - 1, -1, -1) if soc_arr[i] is not None), None)
 
         def _at(arr) -> int:
             if last_idx is None or last_idx >= len(arr):
