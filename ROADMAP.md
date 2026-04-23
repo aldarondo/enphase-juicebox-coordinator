@@ -56,5 +56,5 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 - Dockerfile for NAS deployment
 
 ## 🚫 Blocked
-- ❌ [docker-monitor:container-stopped] Container `enphase-juicebox-coordinator` is not running on the NAS — check `docker logs enphase-juicebox-coordinator` and restart — 2026-04-23 08:42 UTC
+
 [Empty]
