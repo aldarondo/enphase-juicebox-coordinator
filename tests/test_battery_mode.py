@@ -237,11 +237,11 @@ class TestPostPeakSwitch:
     def mocks(self, monkeypatch, mock_email):
         monkeypatch.setattr(
             "battery_mode.enphase_mcp.get_battery_mode",
-            AsyncMock(return_value={"mode": "self-consumption"}),
+            AsyncMock(return_value={"usage": "self-consumption"}),
         )
         monkeypatch.setattr(
             "battery_mode.enphase_mcp.set_battery_mode",
-            AsyncMock(return_value={"mode": "savings"}),
+            AsyncMock(return_value={"profile_set": "cost_savings"}),
         )
         return mock_email
 
@@ -251,7 +251,7 @@ class TestPostPeakSwitch:
 
     async def test_target_mode_savings(self, mocks):
         result = await battery_mode.switch_to_savings()
-        assert result["target_mode"] == "savings"
+        assert result["target_mode"] == "cost_savings"
 
     async def test_label_is_post_peak(self, mocks):
         result = await battery_mode.switch_to_savings()
@@ -351,16 +351,24 @@ class TestSetResponseMissingMode:
 class TestExtractMode:
 
     def test_string_payload(self):
-        assert battery_mode._extract_mode("savings") == "savings"
+        assert battery_mode._extract_mode("cost_savings") == "cost_savings"
+
+    def test_dict_usage_key(self):
+        # enphase_get_battery_settings raw API response
+        assert battery_mode._extract_mode({"usage": "cost_savings"}) == "cost_savings"
+
+    def test_dict_profile_set_key(self):
+        # enphase_set_battery_profile server wrapper response
+        assert battery_mode._extract_mode({"profile_set": "self-consumption"}) == "self-consumption"
 
     def test_dict_mode_key(self):
         assert battery_mode._extract_mode({"mode": "self-consumption"}) == "self-consumption"
 
     def test_dict_battery_mode_key(self):
-        assert battery_mode._extract_mode({"battery_mode": "savings"}) == "savings"
+        assert battery_mode._extract_mode({"battery_mode": "cost_savings"}) == "cost_savings"
 
     def test_dict_profile_key(self):
-        assert battery_mode._extract_mode({"profile": "savings"}) == "savings"
+        assert battery_mode._extract_mode({"profile": "cost_savings"}) == "cost_savings"
 
     def test_none_when_missing(self):
         assert battery_mode._extract_mode({"other": "x"}) is None

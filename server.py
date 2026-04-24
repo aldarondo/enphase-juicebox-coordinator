@@ -251,7 +251,7 @@ TOOLS = [
             "properties": {
                 "mode": {
                     "type":        "string",
-                    "enum":        ["self-consumption", "savings"],
+                    "enum":        ["self-consumption", "cost_savings"],
                     "description": "Target Enphase battery profile.",
                 },
             },

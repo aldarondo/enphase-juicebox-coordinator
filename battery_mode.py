@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 ARIZONA = pytz.timezone("America/Phoenix")
 
 MODE_SELF_CONSUMPTION = "self-consumption"
-MODE_SAVINGS          = "savings"
+MODE_SAVINGS          = "cost_savings"
 
 RETRY_DELAY_SECONDS = 10
 
@@ -47,11 +47,16 @@ FAILURE_CONSEQUENCE = {
 
 
 def _extract_mode(payload) -> str | None:
-    """Pull a mode string out of the loosely-typed enphase_mcp response."""
+    """Pull a mode string out of the loosely-typed enphase_mcp response.
+
+    enphase_get_battery_settings returns the raw Enphase API response where the
+    active profile is under "usage". enphase_set_battery_profile returns a server
+    wrapper with the profile echoed under "profile_set".
+    """
     if isinstance(payload, str):
         return payload
     if isinstance(payload, dict):
-        for key in ("mode", "battery_mode", "profile", "battery_profile"):
+        for key in ("usage", "profile_set", "mode", "battery_mode", "profile", "battery_profile"):
             value = payload.get(key)
             if isinstance(value, str):
                 return value

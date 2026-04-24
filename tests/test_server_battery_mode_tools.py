@@ -73,20 +73,20 @@ class TestSwitchBatteryMode:
         switch_mock.assert_called_once()
         assert payload["status"] == "ok"
 
-    async def test_savings_calls_switch_to(self, monkeypatch):
+    async def test_cost_savings_calls_switch_to(self, monkeypatch):
         mock = AsyncMock(return_value={
             "status":       "ok",
-            "target_mode":  "savings",
-            "applied_mode": "savings",
+            "target_mode":  "cost_savings",
+            "applied_mode": "cost_savings",
             "label":        "manual",
             "attempts":     1,
         })
         monkeypatch.setattr("server.battery_mode.switch_to", mock)
 
-        payload = await _invoke("switch_battery_mode", {"mode": "savings"})
+        payload = await _invoke("switch_battery_mode", {"mode": "cost_savings"})
 
         mock.assert_called_once()
-        assert payload["target_mode"] == "savings"
+        assert payload["target_mode"] == "cost_savings"
 
     async def test_invalid_mode_rejected_by_schema_before_handler(self, monkeypatch):
         """MCP framework validates the enum from Tool.inputSchema before the
