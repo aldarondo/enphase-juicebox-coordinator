@@ -83,6 +83,50 @@ async def _send_failure_alert(label: str, target_mode: str, error: str) -> None:
         log.error("[battery_mode] Failed to send failure alert email: %s", exc)
 
 
+async def _send_status_email(result: dict) -> None:
+    """Send a status email after a scheduled mode switch (success or failure)."""
+    label       = result.get("label", "unknown")
+    status      = result.get("status", "unknown")
+    target_mode = result.get("target_mode", "unknown")
+    applied     = result.get("applied_mode") or result.get("current_mode") or "—"
+    errors      = result.get("errors", [])
+
+    if status == "ok":
+        subject = f"[enphase-coordinator] {label}: switched to {applied} ✓"
+        body = (
+            f"Battery mode switch completed successfully.\n\n"
+            f"Label:    {label}\n"
+            f"Target:   {target_mode}\n"
+            f"Applied:  {applied}\n"
+            f"Attempts: {result.get('attempts', '?')}\n"
+        )
+    elif status == "skipped_already_target":
+        subject = f"[enphase-coordinator] {label}: already {applied}, skipped"
+        body = (
+            f"Battery mode switch skipped — already in target mode.\n\n"
+            f"Label:    {label}\n"
+            f"Mode:     {applied}\n"
+        )
+    else:
+        subject = f"ALERT: [enphase-coordinator] {label}: FAILED after {result.get('attempts','?')} attempt(s)"
+        error_lines = "\n".join(f"  - {e}" for e in errors) or "  (no detail)"
+        body = (
+            f"Battery mode switch FAILED.\n\n"
+            f"Label:    {label}\n"
+            f"Target:   {target_mode}\n"
+            f"Attempts: {result.get('attempts', '?')}\n"
+            f"Errors:\n{error_lines}\n\n"
+            f"Consequence: {FAILURE_CONSEQUENCE.get(target_mode, 'Unknown mode — manual check recommended.')}\n\n"
+            f"Recovery: run `switch_battery_mode` in the coordinator or change manually in the Enphase app."
+        )
+
+    try:
+        await email_mcp.send_email(subject=subject, body=body)
+        log.info("[battery_mode] Status email sent for %s (%s)", label, status)
+    except Exception as exc:
+        log.error("[battery_mode] Failed to send status email for %s: %s", label, exc)
+
+
 async def switch_to(target_mode: str, label: str) -> dict:
     """
     Switch the Enphase battery profile to target_mode.
@@ -172,7 +216,11 @@ async def switch_to(target_mode: str, label: str) -> dict:
 
 async def switch_to_self_consumption() -> dict:
     """15:57 Arizona job: Savings → Self-Consumption before the 16:00 peak."""
-    return await switch_to(MODE_SELF_CONSUMPTION, label="15:57 pre-peak")
+    result = await switch_to(MODE_SELF_CONSUMPTION, label="15:57 pre-peak")
+    # Always email on success/skip; failures already send a detailed alert via switch_to.
+    if result.get("status") != "error":
+        await _send_status_email(result)
+    return result
 
 
 async def switch_to_savings() -> dict:

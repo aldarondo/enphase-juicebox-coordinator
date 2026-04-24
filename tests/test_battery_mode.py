@@ -12,6 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import battery_mode  # noqa: E402 — imported after sys.path is set
 
+# Capture the real function before any fixture patches it.
+_REAL_SEND_STATUS_EMAIL = battery_mode._send_status_email
+
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -23,6 +26,12 @@ def _no_retry_sleep(monkeypatch):
     async def _instant_sleep(_s):
         return None
     monkeypatch.setattr("battery_mode.asyncio.sleep", _instant_sleep)
+
+
+@pytest.fixture(autouse=True)
+def _no_status_email(monkeypatch):
+    """Suppress _send_status_email in all tests except TestPrePeakStatusEmail."""
+    monkeypatch.setattr("battery_mode._send_status_email", AsyncMock())
 
 
 @pytest.fixture
@@ -375,3 +384,67 @@ class TestExtractMode:
 
     def test_none_when_nondict(self):
         assert battery_mode._extract_mode(42) is None
+
+
+# ===========================================================================
+# Pre-peak status email (always-send on success/skip)
+# ===========================================================================
+
+class TestPrePeakStatusEmail:
+    """switch_to_self_consumption sends a status email on success/skip, not on error."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_status_email(self, monkeypatch):
+        """Undo the global _no_status_email suppression using the pre-patch original."""
+        monkeypatch.setattr("battery_mode._send_status_email", _REAL_SEND_STATUS_EMAIL)
+
+    @pytest.fixture
+    def mock_send(self, monkeypatch):
+        m = AsyncMock(return_value={"sent": True})
+        monkeypatch.setattr("battery_mode.email_mcp.send_email", m)
+        return m
+
+    async def test_status_email_sent_on_success(self, monkeypatch, mock_send):
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.get_battery_mode",
+            AsyncMock(return_value={"usage": "cost_savings"}),
+        )
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.set_battery_mode",
+            AsyncMock(return_value={"profile_set": "self-consumption"}),
+        )
+        await battery_mode.switch_to_self_consumption()
+        mock_send.assert_called_once()
+        subject = mock_send.call_args.kwargs["subject"]
+        assert "15:57 pre-peak" in subject
+        assert "ALERT" not in subject
+
+    async def test_status_email_sent_on_skip(self, monkeypatch, mock_send):
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.get_battery_mode",
+            AsyncMock(return_value={"usage": "self-consumption"}),
+        )
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.set_battery_mode",
+            AsyncMock(),
+        )
+        await battery_mode.switch_to_self_consumption()
+        mock_send.assert_called_once()
+        subject = mock_send.call_args.kwargs["subject"]
+        assert "skipped" in subject.lower() or "already" in subject.lower()
+
+    async def test_no_status_email_on_error(self, monkeypatch, mock_send):
+        """On failure, switch_to already sends the alert; no second status email."""
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.get_battery_mode",
+            AsyncMock(side_effect=Exception("enphase down")),
+        )
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.set_battery_mode",
+            AsyncMock(),
+        )
+        await battery_mode.switch_to_self_consumption()
+        # Only the failure alert fires (from switch_to), not a second status email
+        assert mock_send.call_count == 1
+        subject = mock_send.call_args.kwargs["subject"]
+        assert "ALERT" in subject
