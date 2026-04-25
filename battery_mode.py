@@ -163,6 +163,13 @@ async def switch_to(target_mode: str, label: str) -> dict:
         "errors":       [],
     }
 
+    if await enphase_mcp.get_storm_guard_active():
+        result["status"]  = "skipped_storm_guard"
+        result["message"] = "Storm Guard alert is active — skipping mode switch to avoid disrupting storm prep charging."
+        result["finished_at"] = datetime.now(ARIZONA).isoformat()
+        log.info("[battery_mode] %s: %s", label, result["message"])
+        return result
+
     last_error: str | None = None
     for attempt in (1, 2):
         result["attempts"] = attempt

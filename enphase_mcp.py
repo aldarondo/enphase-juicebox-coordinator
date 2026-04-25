@@ -109,6 +109,29 @@ async def set_battery_mode(mode: str) -> dict:
                 ) from exc
 
 
+async def get_storm_guard_active() -> bool:
+    """
+    Return True if Storm Guard is currently alerting (Enphase is charging battery to 100%).
+    Returns False on any error so a check failure never blocks a mode switch.
+    """
+    log.info("[enphase_mcp] Calling enphase_get_storm_guard")
+    try:
+        async with sse_client(ENPHASE_MCP_URL) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("enphase_get_storm_guard", {})
+                if result.isError or not result.content:
+                    return False
+                text = result.content[0].text
+                if text.startswith("Error:"):
+                    return False
+                data = json.loads(text)
+                return bool(data.get("active", False))
+    except Exception as exc:
+        log.warning("[enphase_mcp] get_storm_guard_active failed (failing open): %s", exc)
+        return False
+
+
 async def get_tariff() -> dict:
     """
     Call enphase_get_tariff on the claude-enphase MCP server.
