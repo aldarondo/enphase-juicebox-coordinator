@@ -260,8 +260,8 @@ def compute_schedule(tariff: dict, overnight_enabled: bool = True) -> tuple[list
         weekend_window = {
             "label":    "Weekend — no peak pricing, long trip",
             "days":     ["sat", "sun"],
-            "start":    "08:00",
-            "end":      "22:00",
+            "start":    "00:00",
+            "end":      "23:59",
             "max_amps": 32,
         }
         reasoning += " | overnight charging enabled"

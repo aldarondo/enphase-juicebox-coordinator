@@ -294,12 +294,12 @@ class TestComputeSchedule:
         weekday = next(e for e in schedule if "mon" in e["days"])
         assert weekday["max_amps"] == 32
 
-    def test_weekend_window_is_fixed(self):
-        """Weekend window is always 08:00–22:00."""
-        schedule, _ = compute_schedule(SAMPLE_TARIFF)
+    def test_weekend_window_is_full_day_when_overnight_enabled(self):
+        """Weekend window is 00:00–23:59 when overnight enabled (long trip)."""
+        schedule, _ = compute_schedule(SAMPLE_TARIFF, overnight_enabled=True)
         weekend = next(e for e in schedule if "sat" in e["days"])
-        assert weekend["start"] == "08:00"
-        assert weekend["end"] == "22:00"
+        assert weekend["start"] == "00:00"
+        assert weekend["end"] == "23:59"
 
     def test_weekend_days_are_sat_and_sun(self):
         schedule, _ = compute_schedule(SAMPLE_TARIFF)
@@ -472,9 +472,9 @@ class TestComputeScheduleOvernightFlag:
         we_on  = next(e for e in sched_on  if "sat" in e["days"])
         we_off = next(e for e in sched_off if "sat" in e["days"])
         wd_off = next(e for e in sched_off if "mon" in e["days"])
-        # overnight=True keeps the wide window
-        assert we_on["start"] == "08:00"
-        assert we_on["end"]   == "22:00"
+        # overnight=True uses full-day window so charging starts immediately
+        assert we_on["start"] == "00:00"
+        assert we_on["end"]   == "23:59"
         # overnight=False: weekend matches the weekday daytime window
         assert we_off["start"] == wd_off["start"]
         assert we_off["end"]   == wd_off["end"]
