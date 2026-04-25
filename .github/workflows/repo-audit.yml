@@ -364,25 +364,23 @@ jobs:
             done
 
           # -- 5. Create weekly review PR ---------------------------
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BODY="## Weekly Code Review"
+          BODY="${BODY}\n\n**Period:** ${WEEK_START} -> ${WEEK_END}"
+          BODY="${BODY}\n**Commits:** ${COMMIT_COUNT}"
+          BODY="${BODY}\n\n### Commits included\n\`\`\`"
+          BODY="${BODY}\n${COMMIT_LOG}"
+          BODY="${BODY}\n\`\`\`"
+          BODY="${BODY}\n\n> **Review only - do not merge.** Shows all commits to \`${DEFAULT_BRANCH}\` since the last weekly review."
+          BODY="${BODY}\n> Copilot will review the full week's diff. Closed automatically next Monday."
+          BODY="${BODY}\n\nWorkflow: ${RUN_URL}"
+
           PR_URL=$(gh pr create \
             --base "${CHECKPOINT_BRANCH}" \
             --head "${DEFAULT_BRANCH}" \
-            --title "Weekly Code Review - ${WEEK_START} -> ${WEEK_END}" \
+            --title "Weekly Code Review - ${WEEK_START} to ${WEEK_END}" \
             --label "weekly-review" \
-            --body "## Weekly Code Review
-
-**Period:** \`${WEEK_START}\` -> \`${WEEK_END}\`
-**Commits:** ${COMMIT_COUNT}
-
-### Commits included
-\`\`\`
-${COMMIT_LOG}
-\`\`\`
-
-> **Review only - do not merge.** Shows all commits to \`${DEFAULT_BRANCH}\` since the last weekly review.
-> Copilot will review the full week's diff. Closed automatically next Monday when the new review period opens.
-
-Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+            --body "$(echo -e "${BODY}")")
 
           echo "Created: ${PR_URL}"
           PR_NUMBER=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
