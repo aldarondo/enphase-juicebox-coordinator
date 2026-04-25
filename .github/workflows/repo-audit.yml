@@ -274,22 +274,15 @@ jobs:
         if: always()
         shell: bash
         run: |
-          {
-            echo "## Repository Audit Summary"
-            echo ""
-            echo "| Key | Value |"
-            echo "|-----|-------|"
-            echo "| Repository | \`$GITHUB_REPOSITORY\` |"
-            echo "| Visibility | ${{ github.event.repository.private && 'Private *(CodeQL skipped)*' || 'Public' }} |"
-            echo "| Trigger | \`${{ github.event_name }}\` |"
-            echo "| Commit | \`$GITHUB_SHA\` |"
-            echo "| Auto-fix PR | ${{ steps.create-pr.outputs.pull-request-url || 'No changes detected' }} |"
-            echo ""
-            echo "### Reports generated"
-            for f in audit-results/*.txt audit-results/*.sarif; do
-              [ -f "$f" ] && echo "- \`$f\`"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "## Repository Audit Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Repository | \`$GITHUB_REPOSITORY\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Visibility | ${{ github.event.repository.private && 'Private *(CodeQL skipped)*' || 'Public' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`$GITHUB_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Auto-fix PR | ${{ steps.create-pr.outputs.pull-request-url || 'No changes detected' }} |" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload audit artifacts
         if: always()
