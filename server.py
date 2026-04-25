@@ -713,8 +713,8 @@ async def _apply_overnight_decision(enabled: bool, reasoning: str) -> dict | Non
     immediately program JuiceBox" behavior. The 04:00 daily run is the
     safety-net / idempotent retry.
 
-      enabled=True  → coordinator.run()                          (push TOU)
-      enabled=False → juicebox_mcp.set_charging_schedule([])     (clear)
+      enabled=True  → coordinator.run()                                        (push TOU)
+      enabled=False → optimizer.compute_schedule(overnight_enabled=False) → set_charging_schedule  (daytime-only window)
 
     Returns the updated _last_result dict on success, or None on push
     failure (caller logs; 04:00 run retries).
@@ -765,8 +765,8 @@ async def _nightly_calendar_check() -> None:
     time the morning commute is only a few hours away).
 
     Flow:
-      enabled  → coordinator.run()            (fetch tariff + push TOU schedule)
-      disabled → juicebox_mcp.set_charging_schedule([])  (clear — surplus-only)
+      enabled  → coordinator.run()                                           (fetch tariff + push TOU schedule)
+      disabled → optimizer.compute_schedule(overnight_enabled=False) → set_charging_schedule  (daytime-only window, surplus monitor primary)
 
     The 04:00 daily run re-asserts whichever schedule the flag calls for, so a
     21:00 push failure is self-healing. No iCal URLs configured → stay disabled.
