@@ -4,7 +4,6 @@ Tests for optimizer.py — pure functions, no I/O, no mocking needed.
 
 import sys
 import os
-import pytest
 from datetime import date
 
 # Make sure the project root is on the path

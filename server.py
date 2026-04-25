@@ -358,7 +358,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 enabled,
                 reasoning=f"Manual override: {reason}",
             )
-        except Exception as exc:
+        except Exception:
             log.exception("set_overnight_mode push failed")
             push_result = None
         return [TextContent(type="text", text=json.dumps({

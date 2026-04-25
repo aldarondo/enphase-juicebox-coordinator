@@ -6,7 +6,6 @@ going through the MCP SSE handshake. The Python MCP SSE client and the JS
 SSE SDK have a protocol mismatch that causes 400 errors on the POST phase.
 """
 
-import json
 import logging
 import os
 
