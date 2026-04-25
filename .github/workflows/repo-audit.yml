@@ -187,16 +187,14 @@ jobs:
       # --- Upload SARIF -> Code Scanning + Copilot Autofix ------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        continue-on-error: true   # private repos without GHAS will fail; that's OK
+        if: always() && !github.event.repository.private
         with:
           sarif_file: audit-results/gitleaks.sarif
           category: gitleaks
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        continue-on-error: true
+        if: always() && !github.event.repository.private
         with:
           sarif_file: audit-results/trivy.sarif
           category: trivy
