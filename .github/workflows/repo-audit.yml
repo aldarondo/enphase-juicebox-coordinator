@@ -202,6 +202,10 @@ jobs:
           category: trivy
 
       # --- Auto-fix PR -----------------------------------------
+      - name: Clean up audit artifacts
+        shell: bash
+        run: rm -rf audit-results/ .cache/ gitleaks
+
       - name: Create auto-fix PR
         id: create-pr
         uses: peter-evans/create-pull-request@v7
