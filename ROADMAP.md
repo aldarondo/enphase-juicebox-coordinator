@@ -57,4 +57,4 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 
 ## 🚫 Blocked
 
-[Empty]
+- **Verify stormAlert response key for Storm Guard detection** — `enphase_get_storm_guard` tool was added to claude-enphase and the coordinator checks it before every battery mode switch. However, the exact JSON key in the Enphase `stormAlert` API response is unknown — the handler tries `alertActive`, `active`, and `stormAlert` as candidates. **Blocked until next Storm Guard activation**: call `enphase_get_storm_guard` when a storm alert is active, inspect the `raw` field in the response, and confirm or fix the key check in `claude-enphase/server.py` (`call_tool` handler for `enphase_get_storm_guard`). One-line fix once the real key is known.
