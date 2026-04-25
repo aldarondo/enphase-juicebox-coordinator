@@ -24,3 +24,8 @@ services:
       - "8767:8767"
     volumes:
       - /volume1/docker/enphase-juicebox-coordinator/logs:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
