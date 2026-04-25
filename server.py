@@ -68,6 +68,15 @@ ARIZONA = pytz.timezone("America/Phoenix")
 
 app = Server("enphase-juicebox-coordinator")
 
+# Set to true in .env once APS Storage Rewards enrollment is confirmed.
+_storage_rewards_enrolled = os.environ.get("STORAGE_REWARDS_ENROLLED", "false").lower() == "true"
+
+
+def _is_storage_rewards_season() -> bool:
+    """True during May–Oct (months 5–10), when APS Storage Rewards events can occur."""
+    return datetime.now(ARIZONA).month in range(5, 11)
+
+
 # ── Shared state ──────────────────────────────────────────────────────────────
 _last_result:      dict | None = None
 _last_report:      dict | None = None
@@ -372,8 +381,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "get_surplus_status":
         try:
             peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
+            in_season = _is_storage_rewards_season()
+            effective_peak_end = 22 if _storage_rewards_enrolled and in_season else peak["end_h"]
             payload = dict(_surplus_state)
-            payload["peak_window"] = f"{peak['start_h']:02d}:00–{peak['end_h']:02d}:00 weekdays"
+            payload["peak_window"] = f"{peak['start_h']:02d}:00–{effective_peak_end:02d}:00 weekdays"
+            if _storage_rewards_enrolled and in_season and effective_peak_end != peak["end_h"]:
+                payload["peak_window_note"] = "Extended to 22:00 during APS Storage Rewards season"
+            payload["storage_rewards_enrolled"] = _storage_rewards_enrolled
+            payload["storage_rewards_season"]   = in_season
             payload["thresholds"] = {
                 "battery_full_soc":  surplus_monitor.BATTERY_FULL_SOC,
                 "battery_low_soc":   surplus_monitor.BATTERY_LOW_SOC,
@@ -877,11 +892,18 @@ async def _surplus_monitor_run() -> None:
             log.info("[surplus_monitor] Skipping — off-hours (%02d:%02d)", now.hour, now.minute)
             return
 
-        # Determine peak window from cached tariff (fallback to APS default)
+        # Determine peak window from cached tariff (fallback to APS default).
+        # During APS Storage Rewards season, extend the no-charge window to 22:00
+        # (APS events can dispatch the battery until 22:00 on weekdays — surplus
+        # charging during that window would steal capacity APS expects to control).
         peak = optimizer._find_peak_weekday_hours(_cached_tariff) or optimizer.APS_DEFAULT_PEAK
-        if surplus_monitor.is_peak_time(now.hour, now.minute, peak["start_h"], peak["end_h"]):
+        effective_peak_end = (
+            22 if _storage_rewards_enrolled and _is_storage_rewards_season() and now.weekday() < 5
+            else peak["end_h"]
+        )
+        if surplus_monitor.is_peak_time(now.hour, now.minute, peak["start_h"], effective_peak_end):
             log.info("[surplus_monitor] Skipping — peak window (%02d:00–%02d:00)",
-                     peak["start_h"], peak["end_h"])
+                     peak["start_h"], effective_peak_end)
             # Safety: if we somehow entered surplus mode and peak just started, revert
             if _surplus_state["mode"] == "surplus_override":
                 log.warning("[surplus_monitor] Peak started while surplus override active — reverting")
@@ -934,6 +956,22 @@ async def _surplus_monitor_run() -> None:
         )
 
 
+async def _scheduled_post_event_savings_sweep() -> None:
+    """
+    Weekday 22:05 May–Oct (APS Storage Rewards season only).
+
+    APS events run until 22:00 at the latest. The 19:02 post-peak switch is
+    skipped when an event is active, so the battery could be left in a
+    grid-services profile through the evening. This sweep fires after the
+    event window has definitively closed and restores Savings mode so overnight
+    TOU arbitrage works correctly. No event guard needed — by 22:05 any event
+    is over.
+    """
+    global _last_mode_switch
+    log.info("[scheduler] Post-event savings sweep (22:05 — APS Storage Rewards event window closed)")
+    _last_mode_switch = await battery_mode.switch_to(battery_mode.MODE_SAVINGS, label="22:05 post-event sweep")
+
+
 def _build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=ARIZONA)
     scheduler.add_job(
@@ -984,6 +1022,19 @@ def _build_scheduler() -> AsyncIOScheduler:
         minute=initial["post_m"],
         id="battery_mode_post_peak",
     )
+    # APS Storage Rewards: post-event Savings sweep at 22:05, May–Oct weekdays.
+    # The 19:02 post-peak switch is skipped during active events; this sweep
+    # restores Savings mode after the APS event window has definitively closed.
+    if _storage_rewards_enrolled:
+        scheduler.add_job(
+            _scheduled_post_event_savings_sweep,
+            "cron",
+            month="5-10",
+            day_of_week="mon-fri",
+            hour=22,
+            minute=5,
+            id="battery_mode_post_event_sweep",
+        )
     return scheduler
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -1007,6 +1058,10 @@ async def _run_stdio():
     log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
     log.info("  Pre-peak switch:  next run at %s (America/Phoenix)", next_pre_peak)
     log.info("  Post-peak switch: next run at %s (America/Phoenix)", next_post_peak)
+    if _storage_rewards_enrolled:
+        sweep_job = scheduler.get_job("battery_mode_post_event_sweep")
+        log.info("  Post-event sweep: next run at %s (America/Phoenix) [Storage Rewards enrolled]",
+                 sweep_job.next_run_time if sweep_job else "N/A — outside May–Oct season")
     log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
 
     async with stdio_server() as (read_stream, write_stream):
@@ -1072,6 +1127,10 @@ def _run_sse(host: str, port: int):
         log.info("  Calendar check:   next run at %s (America/Phoenix)", next_calendar)
         log.info("  Pre-peak switch:  next run at %s (America/Phoenix)", next_pre_peak)
         log.info("  Post-peak switch: next run at %s (America/Phoenix)", next_post_peak)
+        if _storage_rewards_enrolled:
+            sweep_job = scheduler.get_job("battery_mode_post_event_sweep")
+            log.info("  Post-event sweep: next run at %s (America/Phoenix) [Storage Rewards enrolled]",
+                     sweep_job.next_run_time if sweep_job else "N/A — outside May–Oct season")
         log.info("  JuiceBox MCP:     %s", os.getenv("JUICEBOX_MCP_URL", "http://<YOUR-NAS-IP>:3001/sse"))
         yield
         scheduler.shutdown()

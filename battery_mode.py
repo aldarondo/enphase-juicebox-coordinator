@@ -18,12 +18,16 @@ emails Charles via claude-email.
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 
 import pytz
 
 import email_mcp
 import enphase_mcp
+
+# Set to true in .env once APS Storage Rewards enrollment is confirmed.
+_STORAGE_REWARDS_ENROLLED = os.environ.get("STORAGE_REWARDS_ENROLLED", "false").lower() == "true"
 
 log = logging.getLogger(__name__)
 ARIZONA = pytz.timezone("America/Phoenix")
@@ -44,6 +48,11 @@ FAILURE_CONSEQUENCE = {
         "TOU optimization is lost for the night."
     ),
 }
+
+
+def _is_storage_rewards_season() -> bool:
+    """True during May–Oct (months 5–10), when APS Storage Rewards events can occur."""
+    return datetime.now(ARIZONA).month in range(5, 11)
 
 
 def _extract_mode(payload) -> str | None:
@@ -169,6 +178,14 @@ async def switch_to(target_mode: str, label: str) -> dict:
         result["finished_at"] = datetime.now(ARIZONA).isoformat()
         log.info("[battery_mode] %s: %s", label, result["message"])
         return result
+
+    if _STORAGE_REWARDS_ENROLLED and _is_storage_rewards_season():
+        if await enphase_mcp.get_active_grid_event():
+            result["status"]  = "skipped_aps_event"
+            result["message"] = "APS Storage Rewards dispatch event active — skipping mode switch so APS controls the battery."
+            result["finished_at"] = datetime.now(ARIZONA).isoformat()
+            log.info("[battery_mode] %s: %s", label, result["message"])
+            return result
 
     last_error: str | None = None
     for attempt in (1, 2):

@@ -109,6 +109,33 @@ async def set_battery_mode(mode: str) -> dict:
                 ) from exc
 
 
+async def get_active_grid_event() -> bool:
+    """
+    Return True if an APS Storage Rewards dispatch event is currently active.
+    Returns False on any error so a check failure never blocks a mode switch.
+
+    NOTE: Uses a best-effort heuristic in the claude-enphase server — the Enphase
+    grid-services event API is not publicly documented. Verify the raw response
+    field during a live event and update claude-enphase/server.py if needed.
+    """
+    log.info("[enphase_mcp] Calling enphase_get_grid_event")
+    try:
+        async with sse_client(ENPHASE_MCP_URL) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("enphase_get_grid_event", {})
+                if result.isError or not result.content:
+                    return False
+                text = result.content[0].text
+                if text.startswith("Error:"):
+                    return False
+                data = json.loads(text)
+                return bool(data.get("active", False))
+    except Exception as exc:
+        log.warning("[enphase_mcp] get_active_grid_event failed (failing open): %s", exc)
+        return False
+
+
 async def get_storm_guard_active() -> bool:
     """
     Return True if Storm Guard is currently alerting (Enphase is charging battery to 100%).
