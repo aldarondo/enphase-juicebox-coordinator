@@ -495,17 +495,25 @@ async def _scheduled_run():
     except Exception:
         log.warning("[scheduler] Could not refresh cached tariff after coordinator run")
 
-    # Fallback: if the 19:02 post-peak switch was missed (e.g. container restarted
-    # mid-evening), the battery may still be in Self-Consumption at 04:00. Switch
-    # back to Savings so TOU optimization is active for the day.
+    # Set the correct battery mode for the day.
+    # Weekdays: Savings (TOU arbitrage — hold charge, discharge during peak).
+    # Weekends: Self-Consumption (no peak pricing — use solar freely, battery
+    #           fills from solar and covers loads as needed).
+    is_weekend = datetime.now(ARIZONA).weekday() >= 5
+    if is_weekend:
+        target_mode  = battery_mode.MODE_SELF_CONSUMPTION
+        fallback_label = "04:00 weekend — Self-Consumption (no peak pricing)"
+    else:
+        target_mode  = battery_mode.MODE_SAVINGS
+        fallback_label = "04:00 post-peak fallback"
     try:
-        result = await battery_mode.switch_to(battery_mode.MODE_SAVINGS, label="04:00 post-peak fallback")
+        result = await battery_mode.switch_to(target_mode, label=fallback_label)
         if result["status"] == "ok":
-            log.info("[scheduler] 04:00 fallback: battery was still in Self-Consumption — switched to Savings")
+            log.info("[scheduler] 04:00 battery mode: switched to %s", target_mode)
         elif result["status"] == "skipped_already_target":
-            log.info("[scheduler] 04:00 fallback: battery already in Savings — no action needed")
+            log.info("[scheduler] 04:00 battery mode: already %s — no action needed", target_mode)
     except Exception as exc:
-        log.warning("[scheduler] 04:00 fallback mode check failed: %s", exc)
+        log.warning("[scheduler] 04:00 battery mode check failed: %s", exc)
 
 
 async def _verify_schedule_against_tariff() -> dict:
