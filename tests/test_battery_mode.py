@@ -385,6 +385,13 @@ class TestExtractMode:
     def test_none_when_nondict(self):
         assert battery_mode._extract_mode(42) is None
 
+    def test_nested_data_profile(self):
+        payload = {"type": "battery-details", "data": {"profile": "self-consumption", "batteryBackupPercentage": 20}}
+        assert battery_mode._extract_mode(payload) == "self-consumption"
+
+    def test_nested_data_usage(self):
+        assert battery_mode._extract_mode({"data": {"usage": "cost_savings"}}) == "cost_savings"
+
 
 # ===========================================================================
 # Pre-peak status email (always-send on success/skip)

@@ -49,13 +49,22 @@ FAILURE_CONSEQUENCE = {
 def _extract_mode(payload) -> str | None:
     """Pull a mode string out of the loosely-typed enphase_mcp response.
 
-    enphase_get_battery_settings returns the raw Enphase API response where the
-    active profile is under "usage". enphase_set_battery_profile returns a server
-    wrapper with the profile echoed under "profile_set".
+    Enphase API shapes seen in the wild:
+      GET /batterySettings/ → {"type": "battery-details", "data": {"profile": "..."}}
+      PUT /profile/         → {"profile": "...", ...} (flat)
+      set_battery_profile wrapper → {"profile_set": "..."}
     """
     if isinstance(payload, str):
         return payload
     if isinstance(payload, dict):
+        # New Enphase API: profile nested under "data"
+        data = payload.get("data")
+        if isinstance(data, dict):
+            for key in ("profile", "usage", "mode", "battery_mode"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    return value
+        # Flat formats (old API, set wrapper, or direct strings)
         for key in ("usage", "profile_set", "mode", "battery_mode", "profile", "battery_profile"):
             value = payload.get(key)
             if isinstance(value, str):
