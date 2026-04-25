@@ -296,3 +296,113 @@ jobs:
           name: repo-audit-results
           path: audit-results
           if-no-files-found: warn
+
+  # ─── Job 2: Weekly rolling code review ───────────────────────
+  weekly-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run weekly review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          CHECKPOINT_BRANCH="review/weekly-checkpoint"
+          MAIN_SHA=$(git rev-parse HEAD)
+          DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --template '{{.defaultBranchRef.name}}')
+          WEEK_END=$(date -u +"%Y-%m-%d")
+          WEEK_START=$(date -u -d "7 days ago" +"%Y-%m-%d")
+
+          # ── 1. Ensure weekly-review label exists ─────────────────
+          gh label create "weekly-review" \
+            --color "5319e7" \
+            --description "Weekly Copilot code review PR" 2>/dev/null || true
+
+          # ── 2. Ensure checkpoint branch exists ───────────────────
+          if ! git ls-remote --exit-code origin "${CHECKPOINT_BRANCH}" >/dev/null 2>&1; then
+            echo "First run — creating checkpoint at current HEAD. Review starts next Monday."
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              --method POST \
+              --field ref="refs/heads/${CHECKPOINT_BRANCH}" \
+              --field sha="${MAIN_SHA}"
+            exit 0
+          fi
+
+          CHECKPOINT_SHA=$(git ls-remote origin "${CHECKPOINT_BRANCH}" | cut -f1)
+          echo "Checkpoint: ${CHECKPOINT_SHA:0:8}  HEAD: ${MAIN_SHA:0:8}"
+
+          # ── 3. Count commits since last review ───────────────────
+          git fetch origin "${CHECKPOINT_BRANCH}"
+          COMMIT_COUNT=$(git rev-list --count "origin/${CHECKPOINT_BRANCH}..HEAD")
+          echo "New commits since last review: ${COMMIT_COUNT}"
+
+          if [ "${COMMIT_COUNT}" = "0" ]; then
+            echo "No new commits this week — skipping review PR."
+            exit 0
+          fi
+
+          COMMIT_LOG=$(git log --oneline "origin/${CHECKPOINT_BRANCH}..HEAD" | head -30)
+
+          # ── 4. Close any previous open review PR ─────────────────
+          gh pr list \
+            --base "${CHECKPOINT_BRANCH}" \
+            --label "weekly-review" \
+            --state open \
+            --json number \
+            --template '{{range .}}{{.number}}{{"\n"}}{{end}}' \
+          | while read -r pr; do
+              [ -n "$pr" ] && gh pr close "$pr" \
+                --comment "Superseded by new weekly review PR." || true
+            done
+
+          # ── 5. Create weekly review PR ───────────────────────────
+          PR_URL=$(gh pr create \
+            --base "${CHECKPOINT_BRANCH}" \
+            --head "${DEFAULT_BRANCH}" \
+            --title "Weekly Code Review — ${WEEK_START} → ${WEEK_END}" \
+            --label "weekly-review" \
+            --body "## Weekly Code Review
+
+**Period:** \`${WEEK_START}\` → \`${WEEK_END}\`
+**Commits:** ${COMMIT_COUNT}
+
+### Commits included
+\`\`\`
+${COMMIT_LOG}
+\`\`\`
+
+> **Review only — do not merge.** Shows all commits to \`${DEFAULT_BRANCH}\` since the last weekly review.
+> Copilot will review the full week's diff. Closed automatically next Monday when the new review period opens.
+
+Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+
+          echo "Created: ${PR_URL}"
+          PR_NUMBER=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
+
+          # ── 6. Request Copilot review ────────────────────────────
+          gh api \
+            "repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}/requested_reviewers" \
+            --method POST \
+            --field 'reviewers[]=copilot-pull-request-reviewer' 2>&1 || true
+
+          # ── 7. Advance checkpoint to current HEAD ─────────────────
+          gh api "repos/$GITHUB_REPOSITORY/git/refs/heads/${CHECKPOINT_BRANCH}" \
+            --method PATCH \
+            --field sha="${MAIN_SHA}" \
+            --field force=true
+
+          echo "Checkpoint advanced to ${MAIN_SHA:0:8}"
+
+          echo "## Weekly Review PR" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PR:** ${PR_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commits reviewed:** ${COMMIT_COUNT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Period:** ${WEEK_START} → ${WEEK_END}" >> "$GITHUB_STEP_SUMMARY"
