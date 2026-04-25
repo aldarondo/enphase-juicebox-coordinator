@@ -231,12 +231,13 @@ def compute_schedule(tariff: dict, overnight_enabled: bool = True) -> tuple[list
 
     overnight_enabled=True  (long trip tomorrow or default):
       Weekdays: charge from peak_end → peak_start (all non-peak hours, wraps overnight).
+      Weekends: wide window 08:00–22:00 (no peak pricing, long trip needs full charge).
 
     overnight_enabled=False (no long trip — surplus solar / cheap rate only):
       Weekdays: charge only during the cheapest daytime window (super off-peak
       when available, otherwise 10:00→peak_start).  No overnight draw.
-
-    Weekends always get a wide window (no meaningful peak pricing).
+      Weekends: same narrow daytime window as weekdays — house battery gets
+      morning solar priority; surplus monitor is primary driver.
     """
     peak = _find_peak_weekday_hours(tariff)
 
@@ -256,6 +257,13 @@ def compute_schedule(tariff: dict, overnight_enabled: bool = True) -> tuple[list
             "end":      f"{peak['start_h']:02d}:00",
             "max_amps": 32,
         }
+        weekend_window = {
+            "label":    "Weekend — no peak pricing, long trip",
+            "days":     ["sat", "sun"],
+            "start":    "08:00",
+            "end":      "22:00",
+            "max_amps": 32,
+        }
         reasoning += " | overnight charging enabled"
     else:
         dw = _find_daytime_window(tariff, peak)
@@ -265,19 +273,20 @@ def compute_schedule(tariff: dict, overnight_enabled: bool = True) -> tuple[list
             "end":      dw["end"],
             "max_amps": 32,
         }
-        reasoning += f" | overnight disabled — daytime only {dw['start']}–{dw['end']}"
+        weekend_window = {
+            "label":    f"Weekend surplus-priority {dw['start']}–{dw['end']} (overnight disabled)",
+            "days":     ["sat", "sun"],
+            "start":    dw["start"],
+            "end":      dw["end"],
+            "max_amps": 32,
+        }
+        reasoning += f" | overnight disabled — daytime only {dw['start']}–{dw['end']} (weekdays + weekends)"
 
     log.info("[optimizer] %s", reasoning)
 
     schedule = [
         {**weekday_window, "days": ["mon", "tue", "wed", "thu", "fri"]},
-        {
-            "label":    "Weekend — no peak pricing",
-            "days":     ["sat", "sun"],
-            "start":    "08:00",
-            "end":      "22:00",
-            "max_amps": 32,
-        },
+        weekend_window,
     ]
 
     return schedule, reasoning

@@ -465,14 +465,21 @@ class TestComputeScheduleOvernightFlag:
         _, reasoning = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
         assert "overnight disabled" in reasoning
 
-    def test_overnight_disabled_weekend_unchanged(self):
-        """Weekend window is always the same regardless of overnight flag."""
+    def test_overnight_disabled_weekend_uses_daytime_window(self):
+        """Weekend narrows to the same daytime window as weekdays when overnight is disabled."""
         sched_on,  _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=True)
         sched_off, _ = compute_schedule(ENPHASE_WINTER_TARIFF, overnight_enabled=False)
         we_on  = next(e for e in sched_on  if "sat" in e["days"])
         we_off = next(e for e in sched_off if "sat" in e["days"])
-        assert we_on["start"] == we_off["start"]
-        assert we_on["end"]   == we_off["end"]
+        wd_off = next(e for e in sched_off if "mon" in e["days"])
+        # overnight=True keeps the wide window
+        assert we_on["start"] == "08:00"
+        assert we_on["end"]   == "22:00"
+        # overnight=False: weekend matches the weekday daytime window
+        assert we_off["start"] == wd_off["start"]
+        assert we_off["end"]   == wd_off["end"]
+        # and it must not span midnight
+        assert int(we_off["start"].split(":")[0]) < int(we_off["end"].split(":")[0])
 
     def test_overnight_disabled_no_overnight_hours_in_window(self):
         """The daytime window must not span midnight (start < end)."""
