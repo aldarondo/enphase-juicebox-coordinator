@@ -59,7 +59,7 @@ jobs:
             ls -1 requirements.txt pyproject.toml poetry.lock Pipfile Pipfile.lock 2>/dev/null || true
           } | tee audit-results/inventory.txt
 
-      # ─── Node.js ─────────────────────────────────────────────
+      # --- Node.js ---------------------------------------------
       - name: Setup Node
         if: hashFiles('package.json') != ''
         uses: actions/setup-node@v4
@@ -111,7 +111,7 @@ jobs:
           npm run -s lint 2>&1 | tee -a audit-results/node.txt || true
           npm run -s build 2>&1 | tee -a audit-results/node.txt || true
 
-      # ─── Python ──────────────────────────────────────────────
+      # --- Python ----------------------------------------------
       - name: Setup Python
         if: hashFiles('pyproject.toml', 'requirements.txt') != ''
         uses: actions/setup-python@v5
@@ -161,7 +161,7 @@ jobs:
             echo "pytest not installed; skipping" | tee audit-results/pytest.txt
           fi
 
-      # ─── Secrets + Vuln scanning ─────────────────────────────
+      # --- Secrets + Vuln scanning -----------------------------
       - name: Secrets scan (Gitleaks)
         shell: bash
         run: |
@@ -184,7 +184,7 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: "0"
 
-      # ─── Upload SARIF → Code Scanning + Copilot Autofix ──────
+      # --- Upload SARIF -> Code Scanning + Copilot Autofix ------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v3
         if: always()
@@ -201,7 +201,7 @@ jobs:
           sarif_file: audit-results/trivy.sarif
           category: trivy
 
-      # ─── Auto-fix PR ─────────────────────────────────────────
+      # --- Auto-fix PR -----------------------------------------
       - name: Create auto-fix PR
         id: create-pr
         uses: peter-evans/create-pull-request@v7
@@ -210,16 +210,16 @@ jobs:
           commit-message: "chore: weekly auto-fixes (npm audit fix, pip-audit --fix, ruff)"
           branch: repo-audit/auto-fix
           delete-branch: false
-          title: "Weekly Audit Auto-fixes — ${{ github.run_number }}"
+          title: "Weekly Audit Auto-fixes - ${{ github.run_number }}"
           body: |
             ## Weekly Audit Auto-fixes
 
             Applied automatically by the `repo-audit` workflow.
 
             ### What was fixed
-            - **`npm audit fix`** — patched vulnerable Node.js dependencies
-            - **`pip-audit --fix`** — upgraded vulnerable Python packages
-            - **`ruff check --fix`** — applied lint auto-fixes
+            - **`npm audit fix`** - patched vulnerable Node.js dependencies
+            - **`pip-audit --fix`** - upgraded vulnerable Python packages
+            - **`ruff check --fix`** - applied lint auto-fixes
 
             ### What to do
             Review the diff. If tests are green, merge. Copilot will leave code review comments on this PR.
@@ -239,7 +239,7 @@ jobs:
             --field 'reviewers[]=copilot-pull-request-reviewer' \
             2>&1 || true   # best-effort; requires Copilot code review enabled in repo settings
 
-      # ─── CodeQL full-repo analysis (public repos only) ───────
+      # --- CodeQL full-repo analysis (public repos only) -------
       - name: Detect CodeQL languages
         if: ${{ !github.event.repository.private }}
         id: codeql-langs
@@ -267,7 +267,7 @@ jobs:
         if: ${{ !github.event.repository.private && steps.codeql-langs.outputs.enabled == 'true' }}
         uses: github/codeql-action/analyze@v3
 
-      # ─── Summary + Artifacts ─────────────────────────────────
+      # --- Summary + Artifacts ---------------------------------
       - name: Job summary
         if: always()
         shell: bash
@@ -297,7 +297,7 @@ jobs:
           path: audit-results
           if-no-files-found: warn
 
-  # ─── Job 2: Weekly rolling code review ───────────────────────
+  # --- Job 2: Weekly rolling code review -----------------------
   weekly-review:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -321,14 +321,14 @@ jobs:
           WEEK_END=$(date -u +"%Y-%m-%d")
           WEEK_START=$(date -u -d "7 days ago" +"%Y-%m-%d")
 
-          # ── 1. Ensure weekly-review label exists ─────────────────
+          # -- 1. Ensure weekly-review label exists -----------------
           gh label create "weekly-review" \
             --color "5319e7" \
             --description "Weekly Copilot code review PR" 2>/dev/null || true
 
-          # ── 2. Ensure checkpoint branch exists ───────────────────
+          # -- 2. Ensure checkpoint branch exists -------------------
           if ! git ls-remote --exit-code origin "${CHECKPOINT_BRANCH}" >/dev/null 2>&1; then
-            echo "First run — creating checkpoint at current HEAD. Review starts next Monday."
+            echo "First run - creating checkpoint at current HEAD. Review starts next Monday."
             gh api "repos/$GITHUB_REPOSITORY/git/refs" \
               --method POST \
               --field ref="refs/heads/${CHECKPOINT_BRANCH}" \
@@ -339,19 +339,19 @@ jobs:
           CHECKPOINT_SHA=$(git ls-remote origin "${CHECKPOINT_BRANCH}" | cut -f1)
           echo "Checkpoint: ${CHECKPOINT_SHA:0:8}  HEAD: ${MAIN_SHA:0:8}"
 
-          # ── 3. Count commits since last review ───────────────────
+          # -- 3. Count commits since last review -------------------
           git fetch origin "${CHECKPOINT_BRANCH}"
           COMMIT_COUNT=$(git rev-list --count "origin/${CHECKPOINT_BRANCH}..HEAD")
           echo "New commits since last review: ${COMMIT_COUNT}"
 
           if [ "${COMMIT_COUNT}" = "0" ]; then
-            echo "No new commits this week — skipping review PR."
+            echo "No new commits this week - skipping review PR."
             exit 0
           fi
 
           COMMIT_LOG=$(git log --oneline "origin/${CHECKPOINT_BRANCH}..HEAD" | head -30)
 
-          # ── 4. Close any previous open review PR ─────────────────
+          # -- 4. Close any previous open review PR -----------------
           gh pr list \
             --base "${CHECKPOINT_BRANCH}" \
             --label "weekly-review" \
@@ -363,15 +363,15 @@ jobs:
                 --comment "Superseded by new weekly review PR." || true
             done
 
-          # ── 5. Create weekly review PR ───────────────────────────
+          # -- 5. Create weekly review PR ---------------------------
           PR_URL=$(gh pr create \
             --base "${CHECKPOINT_BRANCH}" \
             --head "${DEFAULT_BRANCH}" \
-            --title "Weekly Code Review — ${WEEK_START} → ${WEEK_END}" \
+            --title "Weekly Code Review - ${WEEK_START} -> ${WEEK_END}" \
             --label "weekly-review" \
             --body "## Weekly Code Review
 
-**Period:** \`${WEEK_START}\` → \`${WEEK_END}\`
+**Period:** \`${WEEK_START}\` -> \`${WEEK_END}\`
 **Commits:** ${COMMIT_COUNT}
 
 ### Commits included
@@ -379,7 +379,7 @@ jobs:
 ${COMMIT_LOG}
 \`\`\`
 
-> **Review only — do not merge.** Shows all commits to \`${DEFAULT_BRANCH}\` since the last weekly review.
+> **Review only - do not merge.** Shows all commits to \`${DEFAULT_BRANCH}\` since the last weekly review.
 > Copilot will review the full week's diff. Closed automatically next Monday when the new review period opens.
 
 Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
@@ -387,13 +387,13 @@ Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ git
           echo "Created: ${PR_URL}"
           PR_NUMBER=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
 
-          # ── 6. Request Copilot review ────────────────────────────
+          # -- 6. Request Copilot review ----------------------------
           gh api \
             "repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}/requested_reviewers" \
             --method POST \
             --field 'reviewers[]=copilot-pull-request-reviewer' 2>&1 || true
 
-          # ── 7. Advance checkpoint to current HEAD ─────────────────
+          # -- 7. Advance checkpoint to current HEAD -----------------
           gh api "repos/$GITHUB_REPOSITORY/git/refs/heads/${CHECKPOINT_BRANCH}" \
             --method PATCH \
             --field sha="${MAIN_SHA}" \
@@ -405,4 +405,4 @@ Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ git
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **PR:** ${PR_URL}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Commits reviewed:** ${COMMIT_COUNT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Period:** ${WEEK_START} → ${WEEK_END}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Period:** ${WEEK_START} -> ${WEEK_END}" >> "$GITHUB_STEP_SUMMARY"
