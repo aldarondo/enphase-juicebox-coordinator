@@ -50,7 +50,7 @@ async def run_e2e(url: str) -> int:
                 print(f"[PASS] status=ok, juicebox_ok={juicebox_ok}")
                 return 0
             elif status == "partial":
-                print(f"[WARN] status=partial — JuiceBox updated but some errors:")
+                print("[WARN] status=partial — JuiceBox updated but some errors:")
                 for e in errors:
                     print(f"  • {e}")
                 return 0

@@ -8,7 +8,7 @@ tou_schedule and surplus_override modes and interacts with the JuiceBox MCP.
 import os
 import sys
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytz
 import pytest

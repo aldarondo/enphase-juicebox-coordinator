@@ -4,8 +4,6 @@ Tests for juicebox_mcp.py — mocks sse_client and ClientSession.
 
 import sys
 import os
-import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
