@@ -15,6 +15,17 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 ### 🔴 Blocked
 [Empty]
 
+### 🔁 Ongoing / Recurring
+- **Daily coordinator log review** — Each day, pull the previous 24h of logs from the NAS (`python skills/synology.py ssh "sudo docker logs enphase-juicebox-coordinator --since 24h 2>&1 | tail -500" --sudo`) and audit:
+  - Did the 04:00 tariff fetch + schedule push succeed? (`status=ok`, `juicebox_ok=True`)
+  - Did the 21:00 calendar check + immediate JuiceBox push run cleanly?
+  - Did pre-peak (Savings → Self-Consumption) and post-peak (Self-Consumption → Savings) battery mode switches fire on weekdays at the tariff-derived times, with confirmation reads matching the target?
+  - Did the surplus solar monitor activate when SOC ≥ 95% and production > consumption, and revert correctly?
+  - Any tracebacks, retries, email failure alerts, or tariff parse fallbacks?
+  - Compare actual JuiceBox charging windows vs. expected (avoid 16:00–19:00 peak; use super off-peak 10:00–15:00 in winter / overnight when calendar enables it).
+
+  For each anomaly, file a fix on this roadmap and ship it the same day so the next 24h cycle improves. Sunday weekly report (already emailed at 07:17 AZ) is the rollup; this task is the daily granular check.
+
 ## ✅ Completed
 - **Durable rotating file logs (2026-04-22)** — Added `RotatingFileHandler` alongside stdout: 10 MB per file, 10 backups (~100 MB max). Logs mount to `/volume1/docker/enphase-juicebox-coordinator/logs/coordinator.log` on the NAS so they survive container restarts and image rebuilds. `LOG_DIR` env var overrides the path.
 - **QA review of battery mode switching PR + fixes applied (2026-04-21)** — Two issues caught in QA and resolved before merge: (1) mode-switch cron jobs were missing `timezone=ARIZONA` on initial registration — fixed by initializing `AsyncIOScheduler(timezone=ARIZONA)` at the scheduler level so all jobs inherit it; (2) `switch_battery_mode` and `get_battery_mode_status` MCP tool handlers had no test coverage — addressed via new `tests/test_server_battery_mode_tools.py`. 148 tests total.
