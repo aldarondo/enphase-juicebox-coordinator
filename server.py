@@ -458,12 +458,21 @@ async def _scheduled_run():
     reason  = _overnight_charging.get("reason", "")
     log.info("[scheduler] Daily coordinator run — overnight_charging=%s  (%s)", enabled, reason)
 
+    now_iso = datetime.now(ARIZONA).isoformat()
     if enabled:
         try:
             _last_result = await coordinator.run()
             log.info("[scheduler] Done — status: %s", _last_result.get("status"))
-        except Exception:
+        except Exception as exc:
             log.exception("[scheduler] Daily run failed")
+            _last_result = {
+                "started_at":  now_iso,
+                "status":      "error",
+                "errors":      [str(exc)],
+                "reasoning":   "Daily coordinator run failed — see container logs",
+                "juicebox_ok": False,
+                "finished_at": datetime.now(ARIZONA).isoformat(),
+            }
     else:
         # No long trip tomorrow — push daytime-only window so the car charges
         # only during the cheapest rate period (super off-peak) and the surplus
@@ -477,7 +486,7 @@ async def _scheduled_run():
                 tariff = _cached_tariff
             schedule, sched_reasoning = optimizer.compute_schedule(tariff, overnight_enabled=False)
             jb_resp = await juicebox_mcp.set_charging_schedule(schedule)
-            now_iso = datetime.now(ARIZONA).isoformat()
+            finished_iso = datetime.now(ARIZONA).isoformat()
             _last_result = {
                 "started_at":        now_iso,
                 "status":            "ok",
@@ -486,10 +495,18 @@ async def _scheduled_run():
                 "juicebox_ok":       True,
                 "juicebox_response": jb_resp,
                 "errors":            [],
-                "finished_at":       now_iso,
+                "finished_at":       finished_iso,
             }
         except Exception as exc:
             log.error("[scheduler] Failed to push daytime schedule: %s", exc)
+            _last_result = {
+                "started_at":  now_iso,
+                "status":      "error",
+                "errors":      [f"Failed to push daytime-only schedule: {exc}"],
+                "reasoning":   f"Overnight TOU disabled ({reason}) — push to JuiceBox failed",
+                "juicebox_ok": False,
+                "finished_at": datetime.now(ARIZONA).isoformat(),
+            }
 
     # Reset overnight mode — default is surplus-only until tonight's calendar check
     _overnight_charging = {
