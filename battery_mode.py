@@ -212,12 +212,17 @@ async def switch_to(target_mode: str, label: str) -> dict:
             # API), fall back to an independent read to verify — never assume
             # success from an ambiguous payload.
             if confirmed_mode is None:
-                log.info(
-                    "[battery_mode] %s: set response had no mode field; verifying with a read",
-                    label,
+                log.warning(
+                    "[battery_mode] %s: set response had no mode field (payload: %s); verifying with a read",
+                    label, set_payload,
                 )
                 verify_payload = await enphase_mcp.get_battery_mode()
                 confirmed_mode = _extract_mode(verify_payload)
+                if confirmed_mode is None:
+                    log.warning(
+                        "[battery_mode] %s: verify read also returned no mode (payload: %s)",
+                        label, verify_payload,
+                    )
 
             result["applied_mode"] = confirmed_mode
 

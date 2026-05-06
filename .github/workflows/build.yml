@@ -52,9 +52,10 @@ jobs:
           CF_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           GOOGLE_ICAL_URLS: ${{ secrets.GOOGLE_ICAL_URLS }}
+          EMAIL_MCP_URL: ${{ secrets.EMAIL_MCP_URL }}
         run: |
           # Base64-encode files locally so special chars survive the SSH quoting trip
-          ENV_B64=$(printf 'GOOGLE_ICAL_URLS=%s\n' "$GOOGLE_ICAL_URLS" | base64 -w0)
+          ENV_B64=$(printf 'GOOGLE_ICAL_URLS=%s\nEMAIL_MCP_URL=%s\n' "$GOOGLE_ICAL_URLS" "$EMAIL_MCP_URL" | base64 -w0)
           COMPOSE_B64=$(base64 -w0 docker-compose.yml)
           sshpass -e ssh -o StrictHostKeyChecking=no \
             -o "ProxyCommand=cloudflared access ssh --hostname nas-ssh.aldarondo.family --id $CF_CLIENT_ID --secret $CF_CLIENT_SECRET" \
