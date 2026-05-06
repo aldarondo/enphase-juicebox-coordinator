@@ -711,36 +711,22 @@ def _reschedule_battery_mode_jobs() -> None:
 async def _scheduled_pre_peak_mode_switch() -> None:
     """Weekday pre-peak: Savings → Self-Consumption."""
     global _last_mode_switch
-    peak = optimizer._find_peak_weekday_hours(_cached_tariff)
-    if peak is None:
-        log.info("[scheduler] Pre-peak mode switch skipped — tariff has no weekday peak window")
-        _last_mode_switch = {
-            "status":  "skipped_no_peak",
-            "message": "Cached tariff has no weekday peak window; no switch needed today.",
-        }
-        return
-    times = _peak_switch_times(_cached_tariff)
+    times = _peak_switch_times(_cached_tariff or {})
+    peak  = times["peak"]
     label = f"{times['pre_h']:02d}:{times['pre_m']:02d} pre-peak"
-    log.info("[scheduler] Pre-peak battery mode switch (peak starts %02d:00) label=%s",
-             peak["start_h"], label)
+    log.info("[scheduler] Pre-peak battery mode switch (peak starts %02d:00, source=%s) label=%s",
+             peak["start_h"], times["source"], label)
     _last_mode_switch = await battery_mode.switch_to(battery_mode.MODE_SELF_CONSUMPTION, label=label)
 
 
 async def _scheduled_post_peak_mode_switch() -> None:
     """Weekday post-peak: Self-Consumption → Savings."""
     global _last_mode_switch
-    peak = optimizer._find_peak_weekday_hours(_cached_tariff)
-    if peak is None:
-        log.info("[scheduler] Post-peak mode switch skipped — tariff has no weekday peak window")
-        _last_mode_switch = {
-            "status":  "skipped_no_peak",
-            "message": "Cached tariff has no weekday peak window; no switch needed today.",
-        }
-        return
-    times = _peak_switch_times(_cached_tariff)
+    times = _peak_switch_times(_cached_tariff or {})
+    peak  = times["peak"]
     label = f"{times['post_h']:02d}:{times['post_m']:02d} post-peak"
-    log.info("[scheduler] Post-peak battery mode switch (peak ended %02d:00) label=%s",
-             peak["end_h"], label)
+    log.info("[scheduler] Post-peak battery mode switch (peak ended %02d:00, source=%s) label=%s",
+             peak["end_h"], times["source"], label)
     _last_mode_switch = await battery_mode.switch_to(battery_mode.MODE_SAVINGS, label=label)
 
 
