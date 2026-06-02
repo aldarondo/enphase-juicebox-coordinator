@@ -211,6 +211,7 @@ async def switch_to(target_mode: str, label: str) -> dict:
             # shape like {"status": "ok", "queued": true} from a newer Enphase
             # API), fall back to an independent read to verify — never assume
             # success from an ambiguous payload.
+            verify_payload = None
             if confirmed_mode is None:
                 log.warning(
                     "[battery_mode] %s: set response had no mode field (payload: %s); verifying with a read",
@@ -227,6 +228,16 @@ async def switch_to(target_mode: str, label: str) -> dict:
             result["applied_mode"] = confirmed_mode
 
             if confirmed_mode != target_mode:
+                if confirmed_mode is None:
+                    # No recognizable mode in either payload. Surface the raw
+                    # shapes so the alert is actionable instead of a bare "None"
+                    # (a flat "got None" hides whether Enphase erred or just
+                    # returned a shape _extract_mode doesn't know).
+                    raise RuntimeError(
+                        f"Enphase returned no recognizable battery mode "
+                        f"(expected {target_mode!r}); set payload={set_payload!r}, "
+                        f"verify payload={verify_payload!r}"
+                    )
                 raise RuntimeError(
                     f"Enphase did not confirm target mode (got {confirmed_mode!r}, expected {target_mode!r})"
                 )

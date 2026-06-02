@@ -17,6 +17,56 @@ log = logging.getLogger(__name__)
 ENPHASE_MCP_URL = os.getenv("ENPHASE_MCP_URL", "http://<YOUR-NAS-IP>:8766/sse")
 
 
+def _raise_if_error_payload(data, tool_name: str) -> None:
+    """Raise RuntimeError if a parsed JSON payload actually represents an error.
+
+    claude-enphase doesn't always signal failure via ``result.isError`` or an
+    ``"Error:"`` text prefix — when an upstream call fails (DNS failure, expired
+    token, Enphase 5xx) it can return a structured error dict such as
+    ``{"error": "token expired"}`` or ``{"status": "error", "message": "..."}``.
+
+    Left unhandled, that dict flows back as a normal value, ``_extract_mode``
+    in battery_mode.py returns ``None``, and a mode switch reports the misleading
+    "Enphase did not confirm target mode (got None, ...)" instead of the real
+    cause. Surfacing it here puts the actual error in retry logs and alert emails.
+    """
+    if not isinstance(data, dict):
+        return
+    status = data.get("status")
+    is_error_status = isinstance(status, str) and status.lower() in ("error", "failed", "failure")
+    err = data.get("error")
+    if is_error_status or err:
+        detail = (
+            data.get("message")
+            or (err if isinstance(err, str) else None)
+            or data.get("detail")
+            or json.dumps(data)
+        )
+        raise RuntimeError(f"{tool_name} failed: {detail}")
+
+
+def _parse_tool_result(result, tool_name: str) -> dict:
+    """Parse an MCP CallToolResult into a dict, raising on every error shape.
+
+    Failure is signalled three ways, all of which must surface as an exception:
+      1. ``result.isError`` / empty content        → MCP-level error
+      2. text starting with ``"Error:"``           → server's plain-text convention
+      3. a JSON error dict                          → structured error response
+    """
+    if result.isError or not result.content:
+        text = result.content[0].text if result.content else "empty response"
+        raise RuntimeError(f"{tool_name} failed: {text}")
+    text = result.content[0].text
+    if text.startswith("Error:"):
+        raise RuntimeError(f"{tool_name} failed: {text}")
+    try:
+        data = json.loads(text)
+    except (ValueError, AttributeError) as exc:
+        raise RuntimeError(f"{tool_name} returned non-JSON: {text[:200]}") from exc
+    _raise_if_error_payload(data, tool_name)
+    return data
+
+
 async def get_energy_summary(date_str: str | None = None) -> dict:
     """
     Call enphase_get_energy_summary on the claude-enphase MCP server.
@@ -35,18 +85,7 @@ async def get_energy_summary(date_str: str | None = None) -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool("enphase_get_energy_summary", args)
-            if result.isError or not result.content:
-                text = result.content[0].text if result.content else "empty response"
-                raise RuntimeError(f"enphase_get_energy_summary failed: {text}")
-            text = result.content[0].text
-            if text.startswith("Error:"):
-                raise RuntimeError(f"enphase_get_energy_summary failed: {text}")
-            try:
-                return json.loads(text)
-            except (ValueError, AttributeError) as exc:
-                raise RuntimeError(
-                    f"enphase_get_energy_summary returned non-JSON: {text[:200]}"
-                ) from exc
+            return _parse_tool_result(result, "enphase_get_energy_summary")
 
 
 async def get_battery_mode() -> dict:
@@ -64,18 +103,7 @@ async def get_battery_mode() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool("enphase_get_battery_settings", {})
-            if result.isError or not result.content:
-                text = result.content[0].text if result.content else "empty response"
-                raise RuntimeError(f"enphase_get_battery_settings failed: {text}")
-            text = result.content[0].text
-            if text.startswith("Error:"):
-                raise RuntimeError(f"enphase_get_battery_settings failed: {text}")
-            try:
-                return json.loads(text)
-            except (ValueError, AttributeError) as exc:
-                raise RuntimeError(
-                    f"enphase_get_battery_settings returned non-JSON: {text[:200]}"
-                ) from exc
+            return _parse_tool_result(result, "enphase_get_battery_settings")
 
 
 async def set_battery_mode(mode: str) -> dict:
@@ -95,18 +123,7 @@ async def set_battery_mode(mode: str) -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool("enphase_set_battery_profile", {"profile": mode})
-            if result.isError or not result.content:
-                text = result.content[0].text if result.content else "empty response"
-                raise RuntimeError(f"enphase_set_battery_profile failed: {text}")
-            text = result.content[0].text
-            if text.startswith("Error:"):
-                raise RuntimeError(f"enphase_set_battery_profile failed: {text}")
-            try:
-                return json.loads(text)
-            except (ValueError, AttributeError) as exc:
-                raise RuntimeError(
-                    f"enphase_set_battery_profile returned non-JSON: {text[:200]}"
-                ) from exc
+            return _parse_tool_result(result, "enphase_set_battery_profile")
 
 
 async def get_active_grid_event() -> bool:
@@ -175,17 +192,7 @@ async def get_tariff() -> dict:
             await session.initialize()
             log.info("[enphase_mcp] Calling enphase_get_tariff")
             result = await session.call_tool("enphase_get_tariff", {})
-            if result.isError or not result.content:
-                text = result.content[0].text if result.content else "empty response"
-                raise RuntimeError(f"enphase_get_tariff failed: {text}")
-            text = result.content[0].text
-            # claude-enphase server returns plain "Error: ..." text on API failures
-            if text.startswith("Error:"):
-                raise RuntimeError(f"enphase_get_tariff failed: {text}")
-            try:
-                data = json.loads(text)
-                log.debug("[enphase_mcp] Tariff top-level keys: %s",
-                          list(data.keys()) if isinstance(data, dict) else type(data).__name__)
-                return data
-            except (ValueError, AttributeError) as exc:
-                raise RuntimeError(f"enphase_get_tariff returned non-JSON: {text[:200]}") from exc
+            data = _parse_tool_result(result, "enphase_get_tariff")
+            log.debug("[enphase_mcp] Tariff top-level keys: %s",
+                      list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+            return data

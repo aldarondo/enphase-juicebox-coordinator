@@ -352,6 +352,45 @@ class TestSetResponseMissingMode:
         assert result["status"] == "error"
         mock_email.assert_called_once()
 
+    async def test_unrecognized_payload_error_includes_raw_shapes(self, monkeypatch, mock_email):
+        """The recorded error must include the raw payloads (not a bare 'got None')
+        so the alert is actionable when Enphase returns an unknown shape."""
+        get_mock = AsyncMock(side_effect=[
+            {"mode": "savings"},                  # initial
+            {"weird": "shape", "queued": True},   # verify (unrecognized)
+            {"mode": "savings"},                  # retry initial
+            {"weird": "shape", "queued": True},   # retry verify
+        ])
+        set_mock = AsyncMock(return_value={"queued": True})
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_battery_mode", get_mock)
+        monkeypatch.setattr("battery_mode.enphase_mcp.set_battery_mode", set_mock)
+
+        result = await battery_mode.switch_to_self_consumption()
+
+        assert result["status"] == "error"
+        joined = " ".join(result["errors"])
+        assert "no recognizable battery mode" in joined
+        assert "weird" in joined  # raw verify payload surfaced
+
+    async def test_real_upstream_error_surfaces_in_alert(self, monkeypatch, mock_email):
+        """When enphase_mcp raises the real cause (e.g. an error dict the client
+        now converts to an exception), that cause reaches the alert email body —
+        not the misleading 'got None'."""
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.get_battery_mode",
+            AsyncMock(side_effect=RuntimeError(
+                "enphase_get_battery_settings failed: token expired"
+            )),
+        )
+        monkeypatch.setattr("battery_mode.enphase_mcp.set_battery_mode", AsyncMock())
+
+        result = await battery_mode.switch_to_self_consumption()
+
+        assert result["status"] == "error"
+        body = mock_email.call_args.kwargs["body"]
+        assert "token expired" in body
+        assert "got None" not in body
+
 
 # ===========================================================================
 # _extract_mode helper
