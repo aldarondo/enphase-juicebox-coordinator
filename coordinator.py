@@ -4,11 +4,12 @@ Coordinator: fetch Enphase tariff via MCP → find peak hours → program JuiceB
 
 import logging
 from datetime import datetime
+
 import pytz
 
 import enphase_mcp
-import optimizer
 import juicebox_mcp
+import optimizer
 
 log = logging.getLogger(__name__)
 ARIZONA = pytz.timezone("America/Phoenix")

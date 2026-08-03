@@ -20,8 +20,7 @@ ALERT_TO_EMAIL   = os.getenv("ALERT_TO_EMAIL")
 # Derive the base URL from EMAIL_MCP_URL (strip /sse suffix if present)
 def _base_url() -> str:
     url = EMAIL_MCP_URL.rstrip("/")
-    if url.endswith("/sse"):
-        url = url[: -len("/sse")]
+    url = url.removesuffix("/sse")
     return url
 
 

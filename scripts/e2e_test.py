@@ -16,7 +16,6 @@ import sys
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
-
 COORDINATOR_URL = "http://<YOUR-NAS-IP>:8767/sse"
 
 

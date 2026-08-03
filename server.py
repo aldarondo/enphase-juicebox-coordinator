@@ -1075,12 +1075,13 @@ async def _run_stdio():
 
 def _run_sse(host: str, port: int):
     from contextlib import asynccontextmanager
+
+    import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
-    import uvicorn
 
     sse_transport = SseServerTransport("/messages/")
 
