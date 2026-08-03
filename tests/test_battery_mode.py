@@ -4,13 +4,13 @@ Tests for battery_mode.py — mocks enphase_mcp and email_mcp.
 
 import os
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import battery_mode  # noqa: E402 — imported after sys.path is set
+import battery_mode
 
 # Capture the real function before any fixture patches it.
 _REAL_SEND_STATUS_EMAIL = battery_mode._send_status_email

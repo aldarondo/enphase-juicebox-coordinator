@@ -5,13 +5,13 @@ pushes its decision to the JuiceBox immediately (not deferred to 04:00).
 
 import os
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import server  # noqa: E402
+import server
 
 
 @pytest.fixture(autouse=True)

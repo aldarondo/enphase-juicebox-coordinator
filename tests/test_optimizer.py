@@ -2,14 +2,14 @@
 Tests for optimizer.py — pure functions, no I/O, no mocking needed.
 """
 
-import sys
 import os
+import sys
 from datetime import date
 
 # Make sure the project root is on the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from optimizer import _find_peak_weekday_hours, _find_daytime_window, compute_schedule
+from optimizer import _find_daytime_window, _find_peak_weekday_hours, compute_schedule
 
 # ---------------------------------------------------------------------------
 # Shared fixture

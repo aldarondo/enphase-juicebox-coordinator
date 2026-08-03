@@ -3,18 +3,18 @@ Tests for server.py — charge_now and get_weekly_report tools,
 plus the schedule verification helper.
 """
 
-import sys
-import os
 import json
-import pytest
-from unittest.mock import AsyncMock
+import os
+import sys
 from datetime import datetime
+from unittest.mock import AsyncMock
 
+import pytest
 import pytz
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import server  # noqa: E402
+import server
 
 ARIZONA = pytz.timezone("America/Phoenix")
 
