@@ -70,6 +70,6 @@ End-to-end operational — coordinator fetching Enphase tariff, computing schedu
 - Dockerfile for NAS deployment
 
 ## 🚫 Blocked
-- ❌ [docker-monitor:container-stopped] Container `enphase-juicebox-coordinator` is not running on the NAS — check `docker logs enphase-juicebox-coordinator` and restart — 2026-08-06 08:00 UTC
+- ✅ Cleared 2026-08-08 — [docker-monitor:container-stopped] Container `enphase-juicebox-coordinator` not running (raised 2026-08-06 08:00 UTC). Root cause was the unpinned `mcp` dependency letting 2.0.0 in; see the fix in ✅ Completed. Container is up, `restarts=0`, `/sse` returns 200, and the startup log shows live tariff data again (`Peak period 16:00–19:00 @ $0.14375/kWh`, battery-mode jobs rescheduled).
 
 - **Verify stormAlert response key for Storm Guard detection** — `enphase_get_storm_guard` tool was added to claude-enphase and the coordinator checks it before every battery mode switch. However, the exact JSON key in the Enphase `stormAlert` API response is unknown — the handler tries `alertActive`, `active`, and `stormAlert` as candidates. **Blocked until next Storm Guard activation**: call `enphase_get_storm_guard` when a storm alert is active, inspect the `raw` field in the response, and confirm or fix the key check in `claude-enphase/server.py` (`call_tool` handler for `enphase_get_storm_guard`). One-line fix once the real key is known.
