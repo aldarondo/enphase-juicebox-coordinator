@@ -1,4 +1,10 @@
-mcp>=1.0.0
+# Pinned below 2.0 deliberately. mcp 2.0 removed the low-level Server
+# decorators this file is built on (@app.list_tools / @app.call_tool) — the
+# 2.0 Server exposes add_request_handler instead. An unpinned mcp>=1.0.0 let
+# 2.0.0 in on an image rebuild and the container crash-looped at import with
+# "AttributeError: 'Server' object has no attribute 'list_tools'".
+# Migrating to the 2.0 API is separate, deliberate work — see ROADMAP.
+mcp>=1.29,<2
 httpx>=0.27.0
 apscheduler>=3.10.0
 pytz>=2024.1

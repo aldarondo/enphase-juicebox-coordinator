@@ -1078,7 +1078,7 @@ def _run_sse(host: str, port: int):
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.requests import Request
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, Response
     from starlette.routing import Mount, Route
     import uvicorn
 
@@ -1089,6 +1089,13 @@ def _run_sse(host: str, port: int):
             request.scope, request.receive, request._send
         ) as streams:
             await app.run(streams[0], streams[1], app.create_initialization_options())
+        # Starlette >=0.36 requires a route endpoint to return a Response.
+        # Without it the handler returns None and Starlette raises
+        # "TypeError: 'NoneType' object is not callable" on every /sse
+        # connection, so no MCP client can reach this coordinator.
+        # claude-enphase hit this same regression when a rebuild floated
+        # starlette past 0.36; this server had the identical latent bug.
+        return Response()
 
     async def handle_report(request: Request):
         """GET /report — return the latest weekly report as JSON."""
