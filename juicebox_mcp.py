@@ -6,8 +6,9 @@ Uses the MCP Python SDK client so the coordinator talks to the JuiceBox
 through the same tool interface Claude uses — no back-channel coupling.
 """
 
-import os
 import logging
+import os
+
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 

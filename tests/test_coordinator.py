@@ -2,15 +2,15 @@
 Tests for coordinator.py — mocks enphase_mcp, optimizer, and juicebox_mcp.
 """
 
-import sys
 import os
-import pytest
+import sys
 from unittest.mock import AsyncMock
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import coordinator  # noqa: E402 — imported after sys.path is set
-
+import coordinator
 
 # ---------------------------------------------------------------------------
 # Fixture
