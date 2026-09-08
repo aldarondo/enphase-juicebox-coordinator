@@ -494,3 +494,97 @@ class TestPrePeakStatusEmail:
         assert mock_send.call_count == 1
         subject = mock_send.call_args.kwargs["subject"]
         assert "ALERT" in subject
+
+
+# ===========================================================================
+# Alert content on transport failure (2026-09-08)
+#
+# During the 2026-09-03 DNS outage every alert email said only
+# "Error: unhandled errors in a TaskGroup (1 sub-exception)" and advised
+# retrying the switch — advice that could not work, because the upstream was
+# unreachable. These tests pin both halves of that fix.
+# ===========================================================================
+
+class TestConnectivityFailureAlert:
+
+    DNS_MESSAGE = "[Errno -3] Temporary failure in name resolution"
+
+    def test_connectivity_markers_detect_dns_failure(self):
+        assert battery_mode._looks_like_connectivity_failure(
+            f"ConnectError: {self.DNS_MESSAGE}"
+        )
+
+    def test_connectivity_markers_detect_bare_timeout_class(self):
+        assert battery_mode._looks_like_connectivity_failure("ConnectTimeout")
+
+    def test_connectivity_markers_ignore_enphase_rejections(self):
+        assert not battery_mode._looks_like_connectivity_failure(
+            "RuntimeError: enphase_set_battery_profile failed: invalid profile"
+        )
+
+    def test_connectivity_markers_tolerate_empty_error(self):
+        assert not battery_mode._looks_like_connectivity_failure("")
+
+    @pytest.mark.asyncio
+    async def test_alert_names_real_cause_not_taskgroup_noise(self, monkeypatch, mock_email):
+        """The whole point: the email must say what actually broke."""
+        import httpx
+        group = ExceptionGroup(
+            "unhandled errors in a TaskGroup (1 sub-exception)",
+            [httpx.ConnectError(self.DNS_MESSAGE)],
+        )
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_storm_guard_active",
+                            AsyncMock(return_value=False))
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_battery_mode",
+                            AsyncMock(side_effect=group))
+
+        result = await battery_mode.switch_to("cost_savings", label="04:00 post-peak fallback")
+
+        assert result["status"] == "error"
+        body = mock_email.call_args.kwargs["body"]
+        assert self.DNS_MESSAGE in body
+        assert "TaskGroup" not in body
+
+    @pytest.mark.asyncio
+    async def test_alert_adds_diagnosis_for_connectivity_failures(self, monkeypatch, mock_email):
+        import httpx
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_storm_guard_active",
+                            AsyncMock(return_value=False))
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_battery_mode",
+                            AsyncMock(side_effect=httpx.ConnectError(self.DNS_MESSAGE)))
+
+        await battery_mode.switch_to("cost_savings", label="04:00 post-peak fallback")
+
+        body = mock_email.call_args.kwargs["body"]
+        assert "Diagnosis:" in body
+        assert "connectivity failure" in body
+
+    @pytest.mark.asyncio
+    async def test_no_diagnosis_for_genuine_enphase_rejection(self, monkeypatch, mock_email):
+        """An Enphase-side rejection is retryable; it must not get the network hint."""
+        monkeypatch.setattr("battery_mode.enphase_mcp.get_storm_guard_active",
+                            AsyncMock(return_value=False))
+        monkeypatch.setattr(
+            "battery_mode.enphase_mcp.get_battery_mode",
+            AsyncMock(side_effect=RuntimeError(
+                "enphase_get_battery_settings failed: invalid profile")),
+        )
+
+        await battery_mode.switch_to("cost_savings", label="04:00 post-peak fallback")
+
+        body = mock_email.call_args.kwargs["body"]
+        assert "Diagnosis:" not in body
+
+    @pytest.mark.asyncio
+    async def test_empty_message_exception_still_logs_something(
+        self, monkeypatch, mock_email, caplog
+    ):
+        """httpx timeouts stringify to "" — the blank "Failed to send ... email:" bug."""
+        import httpx
+        import logging as _logging
+        monkeypatch.setattr("battery_mode.email_mcp.send_email",
+                            AsyncMock(side_effect=httpx.ConnectTimeout("")))
+        with caplog.at_level(_logging.ERROR):
+            await battery_mode._send_failure_alert("04:00 post-peak fallback",
+                                                   "cost_savings", "some error")
+        assert "ConnectTimeout" in caplog.text

@@ -35,6 +35,7 @@ Smart coordinator service that fetches TOU (time-of-use) tariffs from Enphase, i
 - `enphase.py` — Enphase API client
 - `optimizer.py` — TOU peak window detection and scheduling logic
 - `juicebox_mcp.py` — JuiceBox MCP tool caller
+- `errors.py` — flattens anyio exception groups so failures name their real cause (use `describe_exception` instead of `str(exc)` in any log or alert)
 - `server.py` — MCP server entry point
 - `Dockerfile` — NAS deployment
 - `tests/` — pytest test suite

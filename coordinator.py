@@ -9,6 +9,7 @@ import pytz
 import enphase_mcp
 import optimizer
 import juicebox_mcp
+from errors import describe_exception
 
 log = logging.getLogger(__name__)
 ARIZONA = pytz.timezone("America/Phoenix")
@@ -39,7 +40,7 @@ async def run() -> dict:
         tariff = await enphase_mcp.get_tariff()
         log.info("[coordinator] Tariff fetched OK via Enphase MCP")
     except Exception as exc:
-        msg = f"Failed to fetch tariff: {exc}"
+        msg = f"Failed to fetch tariff: {describe_exception(exc)}"
         log.error("[coordinator] %s", msg)
         result["errors"].append(msg)
         # Proceed anyway — optimizer will use APS defaults
@@ -56,7 +57,7 @@ async def run() -> dict:
         result["juicebox_response"] = jb_resp
         log.info("[coordinator] JuiceBox schedule set OK via JuiceBox MCP")
     except Exception as exc:
-        msg = f"Failed to set JuiceBox schedule: {exc}"
+        msg = f"Failed to set JuiceBox schedule: {describe_exception(exc)}"
         log.error("[coordinator] %s", msg)
         result["errors"].append(msg)
 

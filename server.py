@@ -44,6 +44,7 @@ import enphase_mcp
 import juicebox_mcp
 import optimizer
 import surplus_monitor
+from errors import describe_exception
 
 _log_fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 _root = logging.getLogger()
@@ -296,7 +297,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             _last_result = await coordinator.run()
         except Exception as exc:
             log.exception("run_coordinator failed")
-            _last_result = {"status": "error", "error": str(exc)}
+            _last_result = {"status": "error", "error": describe_exception(exc)}
         return [TextContent(type="text", text=json.dumps(_last_result, indent=2))]
 
     if name == "get_last_run":
@@ -345,8 +346,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "note":              "Normal TOU schedule resumes at next 04:00 coordinator run.",
             }
         except Exception as exc:
-            log.error("charge_now failed: %s", exc)
-            payload = {"status": "error", "error": str(exc)}
+            log.error("charge_now failed: %s", describe_exception(exc))
+            payload = {"status": "error", "error": describe_exception(exc)}
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
     if name == "get_overnight_mode":
@@ -397,7 +398,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             }
         except Exception as exc:
             log.exception("get_surplus_status failed")
-            payload = {"status": "error", "error": str(exc)}
+            payload = {"status": "error", "error": describe_exception(exc)}
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
     if name == "get_weekly_report":
@@ -418,7 +419,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception as exc:
             log.exception("run_calendar_check failed")
             return [TextContent(type="text", text=json.dumps(
-                {"status": "error", "error": str(exc), "timestamp": datetime.now(ARIZONA).isoformat()}
+                {"status": "error", "error": describe_exception(exc), "timestamp": datetime.now(ARIZONA).isoformat()}
             ))]
         return [TextContent(type="text", text=json.dumps(_overnight_charging, indent=2))]
 
@@ -434,7 +435,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             _last_mode_switch = await battery_mode.switch_to(mode, label="manual")
         except Exception as exc:
             log.exception("switch_battery_mode failed")
-            _last_mode_switch = {"status": "error", "error": str(exc), "timestamp": datetime.now(ARIZONA).isoformat()}
+            _last_mode_switch = {"status": "error", "error": describe_exception(exc), "timestamp": datetime.now(ARIZONA).isoformat()}
         return [TextContent(type="text", text=json.dumps(_last_mode_switch, indent=2))]
 
     if name == "get_battery_mode_status":
@@ -468,7 +469,7 @@ async def _scheduled_run():
             _last_result = {
                 "started_at":  now_iso,
                 "status":      "error",
-                "errors":      [str(exc)],
+                "errors":      [describe_exception(exc)],
                 "reasoning":   "Daily coordinator run failed — see container logs",
                 "juicebox_ok": False,
                 "finished_at": datetime.now(ARIZONA).isoformat(),
@@ -498,11 +499,11 @@ async def _scheduled_run():
                 "finished_at":       finished_iso,
             }
         except Exception as exc:
-            log.error("[scheduler] Failed to push daytime schedule: %s", exc)
+            log.error("[scheduler] Failed to push daytime schedule: %s", describe_exception(exc))
             _last_result = {
                 "started_at":  now_iso,
                 "status":      "error",
-                "errors":      [f"Failed to push daytime-only schedule: {exc}"],
+                "errors":      [f"Failed to push daytime-only schedule: {describe_exception(exc)}"],
                 "reasoning":   f"Overnight TOU disabled ({reason}) — push to JuiceBox failed",
                 "juicebox_ok": False,
                 "finished_at": datetime.now(ARIZONA).isoformat(),
@@ -545,7 +546,7 @@ async def _scheduled_run():
         elif result["status"] == "skipped_already_target":
             log.info("[scheduler] 04:00 battery mode: already %s — no action needed", target_mode)
     except Exception as exc:
-        log.warning("[scheduler] 04:00 battery mode check failed: %s", exc)
+        log.warning("[scheduler] 04:00 battery mode check failed: %s", describe_exception(exc))
 
 
 async def _verify_schedule_against_tariff() -> dict:
@@ -590,8 +591,8 @@ async def _verify_schedule_against_tariff() -> dict:
             verification["message"] = "No programmed schedule to compare against."
     except Exception as exc:
         verification["status"] = "error"
-        verification["error"] = str(exc)
-        log.warning("[weekly_report] Tariff verification failed: %s", exc)
+        verification["error"] = describe_exception(exc)
+        log.warning("[weekly_report] Tariff verification failed: %s", describe_exception(exc))
 
     return verification
 
@@ -705,7 +706,7 @@ def _reschedule_battery_mode_jobs() -> None:
             peak["start_h"], peak["end_h"],
         )
     except Exception as exc:
-        log.warning("[scheduler] Could not reschedule battery-mode jobs: %s", exc)
+        log.warning("[scheduler] Could not reschedule battery-mode jobs: %s", describe_exception(exc))
 
 
 async def _scheduled_pre_peak_mode_switch() -> None:
@@ -808,7 +809,7 @@ async def _nightly_calendar_check() -> None:
     try:
         result = await calendar_check.check_tomorrow_driving(ical_urls)
     except Exception as exc:
-        log.error("[calendar_check] Check failed — leaving overnight charging disabled (surplus-only): %s", exc)
+        log.error("[calendar_check] Check failed — leaving overnight charging disabled (surplus-only): %s", describe_exception(exc))
         return
 
     enabled = result["overnight_charging_needed"]
@@ -846,7 +847,7 @@ async def _activate_surplus_charging(amps: int, now: datetime) -> None:
         _surplus_state["last_action"] = f"activated {amps}A surplus charging at {now.isoformat()}"
         log.info("[surplus_monitor] ACTIVATED surplus charging at %dA (~%dW excess)", amps, surplus_w)
     except Exception as exc:
-        log.error("[surplus_monitor] Failed to activate surplus charging: %s", exc)
+        log.error("[surplus_monitor] Failed to activate surplus charging: %s", describe_exception(exc))
 
 
 async def _revert_to_tou_schedule() -> None:
@@ -870,7 +871,7 @@ async def _revert_to_tou_schedule() -> None:
         _surplus_state["last_action"] = f"reverted to TOU schedule ({datetime.now(ARIZONA).isoformat()})"
         log.info("[surplus_monitor] REVERTED to TOU schedule")
     except Exception as exc:
-        log.error("[surplus_monitor] Failed to revert to TOU schedule: %s", exc)
+        log.error("[surplus_monitor] Failed to revert to TOU schedule: %s", describe_exception(exc))
 
 
 async def _surplus_monitor_run() -> None:
@@ -917,7 +918,7 @@ async def _surplus_monitor_run() -> None:
         try:
             summary = await enphase_mcp.get_energy_summary()
         except Exception as exc:
-            log.warning("[surplus_monitor] Could not fetch energy summary: %s", exc)
+            log.warning("[surplus_monitor] Could not fetch energy summary: %s", describe_exception(exc))
             return
 
         values   = surplus_monitor.extract_current_values(summary)

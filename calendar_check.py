@@ -21,6 +21,8 @@ import httpx
 import pytz
 from icalendar import Calendar
 
+from errors import describe_exception
+
 log = logging.getLogger(__name__)
 
 ARIZONA = pytz.timezone("America/Phoenix")
@@ -67,7 +69,7 @@ async def _geocode(address: str, client: httpx.AsyncClient) -> tuple[float, floa
             return None
         return lat, lon
     except Exception as exc:
-        log.warning("[calendar_check] Geocoding failed for '%s': %s", address, exc)
+        log.warning("[calendar_check] Geocoding failed for '%s': %s", address, describe_exception(exc))
     return None
 
 
@@ -115,7 +117,7 @@ async def _fetch_ical_events(url: str, target_date: date,
                 "date":     str(event_date),
             })
     except Exception as exc:
-        log.warning("[calendar_check] Failed to fetch/parse iCal feed: %s", exc)
+        log.warning("[calendar_check] Failed to fetch/parse iCal feed: %s", describe_exception(exc))
     return events
 
 

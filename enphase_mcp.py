@@ -1,7 +1,7 @@
 """
 Enphase MCP client.
 
-Connects to the claude-enphase MCP SSE server and calls enphase_get_tariff.
+Connects to the claude-enphase MCP SSE server and calls its tools.
 Mirrors juicebox_mcp.py — the coordinator talks to both upstream MCPs the same way.
 """
 
@@ -11,6 +11,8 @@ import os
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
+
+from errors import surfacing_errors
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +69,40 @@ def _parse_tool_result(result, tool_name: str) -> dict:
     return data
 
 
+async def _call_tool(tool_name: str, args: dict | None = None) -> dict:
+    """Open an SSE session, call one tool, and parse the result.
+
+    The ``surfacing_errors`` wrapper matters here: ``sse_client`` and
+    ``ClientSession`` run their transports in anyio task groups, so a connection
+    failure escapes as a ``BaseExceptionGroup`` whose message is the useless
+    "unhandled errors in a TaskGroup (1 sub-exception)". Unwrapping it means the
+    retry logs and alert emails name the actual cause instead.
+
+    Parsing deliberately happens after the connection blocks have exited, so a
+    parse error is never re-wrapped by the task group on the way out.
+    """
+    async with surfacing_errors(tool_name):
+        async with sse_client(ENPHASE_MCP_URL) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, args or {})
+    return _parse_tool_result(result, tool_name)
+
+
+async def _call_tool_flag(tool_name: str, key: str = "active") -> bool:
+    """Call a tool that returns a boolean flag, failing open (False) on any error.
+
+    Used for the advisory checks — a Storm Guard or grid-event lookup that can't
+    complete must never block a mode switch.
+    """
+    try:
+        data = await _call_tool(tool_name)
+    except Exception as exc:
+        log.warning("[enphase_mcp] %s failed (failing open): %s", tool_name, exc)
+        return False
+    return bool(data.get(key, False))
+
+
 async def get_energy_summary(date_str: str | None = None) -> dict:
     """
     Call enphase_get_energy_summary on the claude-enphase MCP server.
@@ -81,11 +117,7 @@ async def get_energy_summary(date_str: str | None = None) -> dict:
     args: dict = {}
     if date_str:
         args["date"] = date_str
-    async with sse_client(ENPHASE_MCP_URL) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool("enphase_get_energy_summary", args)
-            return _parse_tool_result(result, "enphase_get_energy_summary")
+    return await _call_tool("enphase_get_energy_summary", args)
 
 
 async def get_battery_mode() -> dict:
@@ -99,11 +131,7 @@ async def get_battery_mode() -> dict:
         Exception if the MCP server is unreachable or the tool call fails.
     """
     log.info("[enphase_mcp] Calling enphase_get_battery_settings")
-    async with sse_client(ENPHASE_MCP_URL) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool("enphase_get_battery_settings", {})
-            return _parse_tool_result(result, "enphase_get_battery_settings")
+    return await _call_tool("enphase_get_battery_settings")
 
 
 async def set_battery_mode(mode: str) -> dict:
@@ -119,11 +147,7 @@ async def set_battery_mode(mode: str) -> dict:
         Exception if the MCP server is unreachable or the tool call fails.
     """
     log.info("[enphase_mcp] Calling enphase_set_battery_profile(profile=%s)", mode)
-    async with sse_client(ENPHASE_MCP_URL) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool("enphase_set_battery_profile", {"profile": mode})
-            return _parse_tool_result(result, "enphase_set_battery_profile")
+    return await _call_tool("enphase_set_battery_profile", {"profile": mode})
 
 
 async def get_active_grid_event() -> bool:
@@ -136,21 +160,7 @@ async def get_active_grid_event() -> bool:
     field during a live event and update claude-enphase/server.py if needed.
     """
     log.info("[enphase_mcp] Calling enphase_get_grid_event")
-    try:
-        async with sse_client(ENPHASE_MCP_URL) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool("enphase_get_grid_event", {})
-                if result.isError or not result.content:
-                    return False
-                text = result.content[0].text
-                if text.startswith("Error:"):
-                    return False
-                data = json.loads(text)
-                return bool(data.get("active", False))
-    except Exception as exc:
-        log.warning("[enphase_mcp] get_active_grid_event failed (failing open): %s", exc)
-        return False
+    return await _call_tool_flag("enphase_get_grid_event")
 
 
 async def get_storm_guard_active() -> bool:
@@ -159,21 +169,7 @@ async def get_storm_guard_active() -> bool:
     Returns False on any error so a check failure never blocks a mode switch.
     """
     log.info("[enphase_mcp] Calling enphase_get_storm_guard")
-    try:
-        async with sse_client(ENPHASE_MCP_URL) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool("enphase_get_storm_guard", {})
-                if result.isError or not result.content:
-                    return False
-                text = result.content[0].text
-                if text.startswith("Error:"):
-                    return False
-                data = json.loads(text)
-                return bool(data.get("active", False))
-    except Exception as exc:
-        log.warning("[enphase_mcp] get_storm_guard_active failed (failing open): %s", exc)
-        return False
+    return await _call_tool_flag("enphase_get_storm_guard")
 
 
 async def get_tariff() -> dict:
@@ -187,12 +183,8 @@ async def get_tariff() -> dict:
         Exception if the MCP server is unreachable or the tool call fails.
     """
     log.info("[enphase_mcp] Connecting to %s", ENPHASE_MCP_URL)
-    async with sse_client(ENPHASE_MCP_URL) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            log.info("[enphase_mcp] Calling enphase_get_tariff")
-            result = await session.call_tool("enphase_get_tariff", {})
-            data = _parse_tool_result(result, "enphase_get_tariff")
-            log.debug("[enphase_mcp] Tariff top-level keys: %s",
-                      list(data.keys()) if isinstance(data, dict) else type(data).__name__)
-            return data
+    log.info("[enphase_mcp] Calling enphase_get_tariff")
+    data = await _call_tool("enphase_get_tariff")
+    log.debug("[enphase_mcp] Tariff top-level keys: %s",
+              list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+    return data

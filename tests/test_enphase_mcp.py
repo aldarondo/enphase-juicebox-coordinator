@@ -142,3 +142,63 @@ class TestSetBatteryMode:
         session.call_tool.assert_called_once_with(
             "enphase_set_battery_profile", {"profile": "cost_savings"}
         )
+
+
+# ===========================================================================
+# Transport-failure unwrapping (2026-09-08)
+#
+# The MCP SSE transport runs inside an anyio task group, so a connection failure
+# escapes the ``async with`` as a BaseExceptionGroup whose str() is only
+# "unhandled errors in a TaskGroup (1 sub-exception)". That opaque string is
+# what five days of alert emails reported during the 2026-09-03 DNS outage.
+# ===========================================================================
+
+class TestTransportFailureSurfacing:
+
+    DNS_MESSAGE = "[Errno -3] Temporary failure in name resolution"
+
+    def _exploding_sse(self, exc):
+        """An sse_client whose context manager raises on entry, like a dead transport."""
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(side_effect=exc)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    @pytest.mark.asyncio
+    async def test_taskgroup_group_is_unwrapped_to_real_cause(self):
+        import httpx
+        group = ExceptionGroup(
+            "unhandled errors in a TaskGroup (1 sub-exception)",
+            [httpx.ConnectError(self.DNS_MESSAGE)],
+        )
+        with patch("enphase_mcp.sse_client", return_value=self._exploding_sse(group)):
+            with pytest.raises(httpx.ConnectError) as caught:
+                await enphase_mcp.get_battery_mode()
+        assert str(caught.value) == self.DNS_MESSAGE
+        assert "TaskGroup" not in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_set_battery_mode_also_surfaces_real_cause(self):
+        import httpx
+        group = ExceptionGroup("unhandled errors in a TaskGroup (1 sub-exception)",
+                               [httpx.ConnectError(self.DNS_MESSAGE)])
+        with patch("enphase_mcp.sse_client", return_value=self._exploding_sse(group)):
+            with pytest.raises(httpx.ConnectError):
+                await enphase_mcp.set_battery_mode("cost_savings")
+
+    @pytest.mark.asyncio
+    async def test_flag_tools_still_fail_open_on_transport_failure(self):
+        """Storm Guard / grid-event checks must never block a mode switch."""
+        import httpx
+        group = ExceptionGroup("unhandled errors in a TaskGroup (1 sub-exception)",
+                               [httpx.ConnectError(self.DNS_MESSAGE)])
+        with patch("enphase_mcp.sse_client", return_value=self._exploding_sse(group)):
+            assert await enphase_mcp.get_storm_guard_active() is False
+            assert await enphase_mcp.get_active_grid_event() is False
+
+    @pytest.mark.asyncio
+    async def test_parse_errors_are_not_rewritten(self):
+        """A structured error payload keeps its own clear message."""
+        session = make_mock_session('{"error": "token expired"}')
+        with pytest.raises(RuntimeError, match="token expired"):
+            await _call(session, enphase_mcp.get_battery_mode)

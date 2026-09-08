@@ -25,6 +25,7 @@ import pytz
 
 import email_mcp
 import enphase_mcp
+from errors import describe_exception
 
 # Set to true in .env once APS Storage Rewards enrollment is confirmed.
 _STORAGE_REWARDS_ENROLLED = os.environ.get("STORAGE_REWARDS_ENROLLED", "false").lower() == "true"
@@ -81,6 +82,36 @@ def _extract_mode(payload) -> str | None:
     return None
 
 
+# Error fragments that mean "the coordinator could not reach claude-enphase, or
+# claude-enphase could not reach Enlighten" — as opposed to Enphase rejecting a
+# well-formed request. Matched case-insensitively against the flattened error.
+_CONNECTIVITY_MARKERS = (
+    "name resolution",
+    "temporary failure",
+    "connecterror",
+    "connecttimeout",
+    "readtimeout",
+    "connection refused",
+    "network is unreachable",
+    "no route to host",
+    "timed out",
+)
+
+_CONNECTIVITY_HINT = (
+    "This looks like a connectivity failure, not an Enphase rejection — retrying "
+    "the switch will not help until the network path is restored. Check, in order: "
+    "the claude-enphase container on the NAS, DNS resolution from that container, "
+    "and the NAS's own outbound route (a dead NordVPN tunnel holding the default "
+    "route black-holes all outbound traffic)."
+)
+
+
+def _looks_like_connectivity_failure(error: str) -> bool:
+    """True if the error text indicates an unreachable upstream rather than a bad request."""
+    lowered = (error or "").lower()
+    return any(marker in lowered for marker in _CONNECTIVITY_MARKERS)
+
+
 async def _send_failure_alert(label: str, target_mode: str, error: str) -> None:
     """Notify Charles that a mode switch failed after retry."""
     subject = f"ALERT: [enphase-coordinator] {label} mode switch FAILED (retries exhausted)"
@@ -94,11 +125,13 @@ async def _send_failure_alert(label: str, target_mode: str, error: str) -> None:
         f"Recovery: run `switch_battery_mode` in the coordinator to retry, "
         f"or change the mode manually in the Enphase app."
     )
+    if _looks_like_connectivity_failure(error):
+        body += f"\n\nDiagnosis: {_CONNECTIVITY_HINT}"
     try:
         await email_mcp.send_email(subject=subject, body=body)
         log.info("[battery_mode] Failure alert email sent for %s", label)
     except Exception as exc:
-        log.error("[battery_mode] Failed to send failure alert email: %s", exc)
+        log.error("[battery_mode] Failed to send failure alert email: %s", describe_exception(exc))
 
 
 async def _send_status_email(result: dict) -> None:
@@ -142,7 +175,7 @@ async def _send_status_email(result: dict) -> None:
         await email_mcp.send_email(subject=subject, body=body)
         log.info("[battery_mode] Status email sent for %s (%s)", label, status)
     except Exception as exc:
-        log.error("[battery_mode] Failed to send status email for %s: %s", label, exc)
+        log.error("[battery_mode] Failed to send status email for %s: %s", label, describe_exception(exc))
 
 
 async def switch_to(target_mode: str, label: str) -> dict:
@@ -249,7 +282,11 @@ async def switch_to(target_mode: str, label: str) -> dict:
             return result
 
         except Exception as exc:
-            last_error = str(exc)
+            # describe_exception, not str(): an MCP transport failure arrives as a
+            # BaseExceptionGroup whose str() is only "unhandled errors in a
+            # TaskGroup (1 sub-exception)", which is what the alert email would
+            # otherwise report instead of the real cause.
+            last_error = describe_exception(exc)
             result["errors"].append(f"attempt {attempt}: {last_error}")
             log.warning("[battery_mode] %s attempt %d failed: %s", label, attempt, last_error)
             if attempt == 1:
