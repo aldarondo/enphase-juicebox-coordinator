@@ -8,15 +8,15 @@ the real cause surfaces in retry logs and battery-mode failure alerts, instead
 of flowing back as a value that ``_extract_mode`` turns into a misleading None.
 """
 
-import sys
 import os
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import enphase_mcp  # noqa: E402
+import enphase_mcp
 
 
 def make_mock_session(response_text: str | None = "{}", empty_content: bool = False,

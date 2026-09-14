@@ -10,8 +10,8 @@ import sys
 from datetime import datetime
 from unittest.mock import AsyncMock
 
-import pytz
 import pytest
+import pytz
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -6,10 +6,9 @@ derived from the tariff peak window (with APS default fallback).
 import os
 import sys
 
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import server  # noqa: E402
+import server
 
 
 def _tariff_with_peak(start_min: int, end_min: int) -> dict:
