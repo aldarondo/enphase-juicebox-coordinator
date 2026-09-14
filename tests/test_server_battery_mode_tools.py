@@ -10,13 +10,13 @@ argument validation, and shared-state updates are all covered.
 import json
 import os
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import server  # noqa: E402
+import server
 
 
 @pytest.fixture(autouse=True)

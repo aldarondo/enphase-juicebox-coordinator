@@ -30,9 +30,9 @@ import contextlib
 
 __all__ = [
     "UpstreamError",
-    "iter_leaf_exceptions",
     "describe_exception",
     "flatten_exception",
+    "iter_leaf_exceptions",
     "surfacing_errors",
 ]
 
